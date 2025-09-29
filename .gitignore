@@ -1,0 +1,5 @@
+**/.DS_Store
+**/.env
+**/.prettierrc
+**/dist
+**/node_modules
