@@ -5,7 +5,8 @@
   "scripts": {
     "build": "cd fiken-shared && npm run build && cd ../fiken-mcp && npm run build",
     "start": "cd fiken-mcp && npm start",
-    "postinstall": "cd fiken-shared && npm install && npm run build && cd ../fiken-mcp && npm install"
+    "postinstall": "cd fiken-shared && npm install && npm run build && cd ../fiken-mcp && npm install",
+    "heroku-postbuild": "npm run build"
   },
   "engines": {
     "node": ">=18.0.0"
