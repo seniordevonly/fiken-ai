@@ -1147,17 +1147,24 @@ class FikenMCPServer {
                 capabilities: {
                   tools: {},
                   authentication: {
+                    type: 'oauth2',
                     oauth2: {
-                      authorizationUrl: `https://${req.headers.host}/oauth/authorize`,
-                      tokenUrl: `https://${req.headers.host}/oauth/token`,
-                      scopes: ['fiken:read', 'fiken:write']
+                      issuer: `https://${req.headers.host}`,
+                      authorizationEndpoint: `https://${req.headers.host}/oauth/authorize`,
+                      tokenEndpoint: `https://${req.headers.host}/oauth/token`,
+                      grantTypes: ['client_credentials'],
+                      scopes: ['fiken:read', 'fiken:write'],
+                      clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
                     }
                   }
                 },
                 serverInfo: {
                   name: 'fiken-mcp',
                   version: '0.1.0',
-                  authentication: 'oauth2'
+                  authentication: {
+                    type: 'oauth2',
+                    required: true
+                  }
                 }
               }
             };
@@ -1219,17 +1226,24 @@ class FikenMCPServer {
           capabilities: {
             tools: {},
             authentication: {
+              type: 'oauth2',
               oauth2: {
-                authorizationUrl: `https://fiken-ai.regnmedoss.no/oauth/authorize`,
-                tokenUrl: `https://fiken-ai.regnmedoss.no/oauth/token`,
-                scopes: ['fiken:read', 'fiken:write']
+                issuer: `https://fiken-ai.regnmedoss.no`,
+                authorizationEndpoint: `https://fiken-ai.regnmedoss.no/oauth/authorize`,
+                tokenEndpoint: `https://fiken-ai.regnmedoss.no/oauth/token`,
+                grantTypes: ['client_credentials'],
+                scopes: ['fiken:read', 'fiken:write'],
+                clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
               }
             }
           },
           serverInfo: {
             name: 'fiken-mcp',
             version: '0.1.0',
-            authentication: 'oauth2'
+            authentication: {
+              type: 'oauth2',
+              required: true
+            }
           }
         }
       };
