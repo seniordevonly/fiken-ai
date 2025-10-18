@@ -1489,6 +1489,14 @@ class FikenMCPServer {
           response_types_supported: ['token'],
           subject_types_supported: ['public']
         }));
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/oauth/authorize') {
+        // OAuth 2.0 Authorization Endpoint (for completeness, though not used in client credentials flow)
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(400);
+        res.end(JSON.stringify({
+          error: 'unsupported_response_type',
+          error_description: 'This server only supports client_credentials grant type. Use the token endpoint directly.'
+        }));
       } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
         // OAuth 2.0 Token Endpoint
         await this.handleOAuthToken(req, res);
