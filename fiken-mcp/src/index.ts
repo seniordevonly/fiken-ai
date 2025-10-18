@@ -1057,6 +1057,143 @@ class FikenMCPServer {
     }
   }
 
+  private generateAccessToken(): string {
+    // Generate a secure access token (JWT-like format)
+    const payload = {
+      iss: 'fiken-mcp-server',
+      aud: 'chatgpt',
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+      scope: 'fiken:read fiken:write'
+    };
+    
+    // Simple token format (in production, use proper JWT)
+    const tokenData = Buffer.from(JSON.stringify(payload)).toString('base64');
+    return `fiken_${tokenData}_${Date.now()}`;
+  }
+
+  private validateOAuthCredentials(clientId: string, clientSecret: string): boolean {
+    const validClientId = process.env.OAUTH_CLIENT_ID || 'fiken-mcp-client';
+    const validClientSecret = process.env.OAUTH_CLIENT_SECRET || 'fiken-mcp-secret-2024';
+    
+    return clientId === validClientId && clientSecret === validClientSecret;
+  }
+
+  private validateAccessToken(token: string): boolean {
+    if (!token || !token.startsWith('fiken_')) {
+      return false;
+    }
+    
+    try {
+      const parts = token.split('_');
+      if (parts.length !== 3) return false;
+      
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+      const now = Math.floor(Date.now() / 1000);
+      
+      // Check if token is expired
+      return payload.exp > now;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private authenticateRequest(req: http.IncomingMessage): boolean {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return false;
+    }
+    
+    const token = authHeader.substring(7);
+    return this.validateAccessToken(token);
+  }
+
+  private sendAuthError(res: http.ServerResponse): void {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(401);
+    res.end(JSON.stringify({
+      error: 'invalid_token',
+      error_description: 'The access token provided is expired, revoked, malformed, or invalid.'
+    }));
+  }
+
+  private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', () => {
+        try {
+          // Parse form data or JSON
+          let params: any;
+          const contentType = req.headers['content-type'] || '';
+          
+          if (contentType.includes('application/x-www-form-urlencoded')) {
+            params = new URLSearchParams(body);
+            params = Object.fromEntries(params.entries());
+          } else {
+            params = JSON.parse(body);
+          }
+          
+          const { grant_type, client_id, client_secret } = params;
+          
+          // Validate grant type
+          if (grant_type !== 'client_credentials') {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(400);
+            res.end(JSON.stringify({
+              error: 'unsupported_grant_type',
+              error_description: 'Only client_credentials grant type is supported'
+            }));
+            return;
+          }
+          
+          // Validate client credentials
+          if (!this.validateOAuthCredentials(client_id, client_secret)) {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(401);
+            res.end(JSON.stringify({
+              error: 'invalid_client',
+              error_description: 'Invalid client credentials'
+            }));
+            return;
+          }
+          
+          // Generate access token
+          const accessToken = this.generateAccessToken();
+          
+          // Return token response
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            access_token: accessToken,
+            token_type: 'Bearer',
+            expires_in: 86400, // 24 hours
+            scope: 'fiken:read fiken:write'
+          }));
+          
+        } catch (error) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({
+            error: 'invalid_request',
+            error_description: 'Invalid request format'
+          }));
+        }
+      });
+      
+    } catch (error) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      }));
+    }
+  }
+
   async run(): Promise<void> {
     // Start MCP server on stdio for local development
     if (!process.env.PORT) {
@@ -1082,6 +1219,7 @@ class FikenMCPServer {
       
       const parsedUrl = url.parse(req.url!, true);
       
+      // Public endpoints (no authentication required)
       if (req.method === 'GET' && parsedUrl.pathname === '/') {
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
@@ -1089,6 +1227,8 @@ class FikenMCPServer {
           name: 'Fiken MCP Server',
           version: '0.1.0',
           status: 'running',
+          authentication: 'oauth2',
+          token_endpoint: '/oauth/token',
           tools: this.getToolsList().map(tool => tool.name),
           protocols: ['mcp', 'http']
         }));
@@ -1096,10 +1236,23 @@ class FikenMCPServer {
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
         res.end(JSON.stringify({ status: 'healthy' }));
+      } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
+        // OAuth 2.0 Token Endpoint
+        await this.handleOAuthToken(req, res);
       } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
+        // Protected endpoint - require OAuth authentication
+        if (!this.authenticateRequest(req)) {
+          this.sendAuthError(res);
+          return;
+        }
         // Handle MCP protocol over HTTP
         await this.handleMcpOverHttp(req, res);
       } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
+        // Protected endpoint - require OAuth authentication
+        if (!this.authenticateRequest(req)) {
+          this.sendAuthError(res);
+          return;
+        }
         // Provide OpenAPI spec as alternative
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
