@@ -1138,7 +1138,33 @@ class FikenMCPServer {
           
           // Allow initialize method without authentication for OAuth discovery
           if (mcpRequest.method === 'initialize') {
-            await this.handleMcpOverHttp(req, res);
+            // Handle initialize directly without calling handleMcpOverHttp to avoid body re-reading
+            const mcpResponse = {
+              jsonrpc: '2.0',
+              id: mcpRequest.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                  tools: {},
+                  authentication: {
+                    oauth2: {
+                      authorizationUrl: `https://${req.headers.host}/oauth/authorize`,
+                      tokenUrl: `https://${req.headers.host}/oauth/token`,
+                      scopes: ['fiken:read', 'fiken:write']
+                    }
+                  }
+                },
+                serverInfo: {
+                  name: 'fiken-mcp',
+                  version: '0.1.0',
+                  authentication: 'oauth2'
+                }
+              }
+            };
+            
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(200);
+            res.end(JSON.stringify(mcpResponse));
             return;
           }
           
@@ -1148,8 +1174,8 @@ class FikenMCPServer {
             return;
           }
           
-          // Handle authenticated MCP request
-          await this.handleMcpOverHttp(req, res);
+          // Handle authenticated MCP request by processing the parsed request
+          await this.processMcpRequest(mcpRequest, res);
           
         } catch (error) {
           res.setHeader('Content-Type', 'application/json');
@@ -1177,6 +1203,131 @@ class FikenMCPServer {
         }
       }));
     }
+  }
+
+  private async processMcpRequest(mcpRequest: any, res: http.ServerResponse): Promise<void> {
+    let mcpResponse;
+    
+    // Handle MCP requests
+    if (mcpRequest.method === 'initialize') {
+      // Handle MCP initialization
+      mcpResponse = {
+        jsonrpc: '2.0',
+        id: mcpRequest.id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: {},
+            authentication: {
+              oauth2: {
+                authorizationUrl: `https://fiken-ai.regnmedoss.no/oauth/authorize`,
+                tokenUrl: `https://fiken-ai.regnmedoss.no/oauth/token`,
+                scopes: ['fiken:read', 'fiken:write']
+              }
+            }
+          },
+          serverInfo: {
+            name: 'fiken-mcp',
+            version: '0.1.0',
+            authentication: 'oauth2'
+          }
+        }
+      };
+    } else if (mcpRequest.method === 'notifications/initialized') {
+      // Handle initialized notification (no response needed)
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(200);
+      res.end();
+      return;
+    } else if (mcpRequest.method === 'tools/list') {
+      // Return the same detailed tools list as STDIO mode
+      mcpResponse = {
+        jsonrpc: '2.0',
+        id: mcpRequest.id,
+        result: {
+          tools: this.getToolsList()
+        }
+      };
+    } else if (mcpRequest.method === 'tools/call') {
+      // Handle tool calls - execute the actual tool
+      try {
+        const { name, arguments: args } = mcpRequest.params;
+        let toolResult;
+
+        switch (name) {
+          case 'fiken_status':
+            toolResult = await this.handleStatus(args);
+            break;
+          case 'fiken_configure':
+            toolResult = await this.handleConfigure(args);
+            break;
+          case 'fiken_get_purchases':
+            toolResult = await this.handleGetPurchases(args);
+            break;
+          case 'fiken_create_purchase':
+            toolResult = await this.handleCreatePurchase(args);
+            break;
+          case 'fiken_get_purchase':
+            toolResult = await this.handleGetPurchase(args);
+            break;
+          case 'fiken_delete_purchase':
+            toolResult = await this.handleDeletePurchase(args);
+            break;
+          case 'fiken_create_purchase_draft':
+            toolResult = await this.handleCreatePurchaseDraft(args);
+            break;
+          case 'fiken_get_purchase_draft':
+            toolResult = await this.handleGetPurchaseDraft(args);
+            break;
+          case 'fiken_get_purchase_draft_attachments':
+            toolResult = await this.handleGetPurchaseDraftAttachments(args);
+            break;
+          case 'fiken_add_attachment_to_purchase_draft':
+            toolResult = await this.handleAddAttachmentToPurchaseDraft(args);
+            break;
+          case 'fiken_create_purchase_payment':
+            toolResult = await this.handleCreatePurchasePayment(args);
+            break;
+          default:
+            throw new Error(`Unknown tool: ${name}`);
+        }
+
+        mcpResponse = {
+          jsonrpc: '2.0',
+          id: mcpRequest.id,
+          result: toolResult
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        mcpResponse = {
+          jsonrpc: '2.0',
+          id: mcpRequest.id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: `Error: ${errorMessage}`,
+              },
+            ],
+            isError: true,
+          }
+        };
+      }
+    } else {
+      // Unknown method
+      mcpResponse = {
+        jsonrpc: '2.0',
+        id: mcpRequest.id,
+        error: {
+          code: -32601,
+          message: 'Method not found'
+        }
+      };
+    }
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(200);
+    res.end(JSON.stringify(mcpResponse));
   }
 
   private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
