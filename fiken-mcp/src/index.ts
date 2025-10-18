@@ -862,10 +862,27 @@ class FikenMCPServer {
       req.on('end', async () => {
         try {
           const mcpRequest = JSON.parse(body);
+          console.error('MCP Request:', JSON.stringify(mcpRequest, null, 2));
           let mcpResponse;
           
           // Handle MCP requests
-          if (mcpRequest.method === 'tools/list') {
+          if (mcpRequest.method === 'initialize') {
+            // Handle MCP initialization
+            mcpResponse = {
+              jsonrpc: '2.0',
+              id: mcpRequest.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                  tools: {}
+                },
+                serverInfo: {
+                  name: 'fiken-mcp',
+                  version: '0.1.0'
+                }
+              }
+            };
+          } else if (mcpRequest.method === 'tools/list') {
             // Return tools list directly
             mcpResponse = {
               jsonrpc: '2.0',
@@ -899,6 +916,7 @@ class FikenMCPServer {
             };
           }
           
+          console.error('MCP Response:', JSON.stringify(mcpResponse, null, 2));
           res.setHeader('Content-Type', 'application/json');
           res.writeHead(200);
           res.end(JSON.stringify(mcpResponse));
