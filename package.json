@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "Fiken AI monorepo with MCP server",
   "scripts": {
-    "build": "cd fiken-mcp && npm run build",
+    "build": "cd fiken-shared && npm run build && cd ../fiken-mcp && npm run build",
     "start": "cd fiken-mcp && npm start",
-    "postinstall": "cd fiken-shared && npm install && cd ../fiken-mcp && npm install"
+    "postinstall": "cd fiken-shared && npm install && npm run build && cd ../fiken-mcp && npm install"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.7"
   }
 }
