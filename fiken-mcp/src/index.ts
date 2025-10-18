@@ -1252,6 +1252,18 @@ class FikenMCPServer {
       } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
         // OAuth 2.0 Token Endpoint
         await this.handleOAuthToken(req, res);
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/oauth-authorization-server') {
+        // OAuth 2.0 Discovery Endpoint under MCP path
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          issuer: `https://${req.headers.host}`,
+          token_endpoint: `https://${req.headers.host}/oauth/token`,
+          grant_types_supported: ['client_credentials'],
+          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+          scopes_supported: ['fiken:read', 'fiken:write'],
+          response_types_supported: ['token']
+        }));
       } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
         // Protected endpoint - require OAuth authentication
         if (!this.authenticateRequest(req)) {
