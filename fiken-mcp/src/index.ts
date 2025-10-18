@@ -1514,12 +1514,32 @@ class FikenMCPServer {
           resource_registration: `https://${req.headers.host}/oauth/token`
         }));
       } else if (req.method === 'GET' && parsedUrl.pathname === '/oauth/authorize') {
-        // OAuth 2.0 Authorization Endpoint (for completeness, though not used in client credentials flow)
+        // OAuth 2.0 Authorization Endpoint - redirect to client credentials info
+        res.setHeader('Content-Type', 'text/html');
+        res.writeHead(200);
+        res.end(`
+          <!DOCTYPE html>
+          <html>
+          <head><title>OAuth Authorization</title></head>
+          <body>
+            <h1>OAuth 2.0 Authorization</h1>
+            <p>This server uses <strong>Client Credentials</strong> flow.</p>
+            <p>Please use the token endpoint directly:</p>
+            <pre>POST https://${req.headers.host}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET</pre>
+            <p><a href="/.well-known/openid-configuration">View OpenID Configuration</a></p>
+          </body>
+          </html>
+        `);
+      } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/authorize') {
+        // Handle POST to authorization endpoint - redirect to client credentials
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(400);
         res.end(JSON.stringify({
-          error: 'unsupported_response_type',
-          error_description: 'This server only supports client_credentials grant type. Use the token endpoint directly.'
+          error: 'unsupported_grant_type',
+          error_description: 'This server only supports client_credentials grant type. Use POST /oauth/token with grant_type=client_credentials.'
         }));
       } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
         // OAuth 2.0 Token Endpoint
