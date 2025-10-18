@@ -882,6 +882,12 @@ class FikenMCPServer {
                 }
               }
             };
+          } else if (mcpRequest.method === 'notifications/initialized') {
+            // Handle initialized notification (no response needed)
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(200);
+            res.end();
+            return;
           } else if (mcpRequest.method === 'tools/list') {
             // Return tools list directly
             mcpResponse = {
@@ -947,6 +953,57 @@ class FikenMCPServer {
     }
   }
 
+  private getOpenApiSpec() {
+    return {
+      openapi: '3.0.0',
+      info: {
+        title: 'Fiken MCP Server',
+        version: '0.1.0',
+        description: 'Fiken API tools via MCP protocol'
+      },
+      servers: [
+        {
+          url: 'https://fiken-ai-dev-5bab4c9f4bc4.herokuapp.com',
+          description: 'Fiken MCP Server'
+        }
+      ],
+      paths: {
+        '/mcp': {
+          post: {
+            summary: 'MCP Protocol Endpoint',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      jsonrpc: { type: 'string', example: '2.0' },
+                      id: { type: 'number', example: 1 },
+                      method: { type: 'string', example: 'tools/list' },
+                      params: { type: 'object' }
+                    }
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': {
+                description: 'MCP Response',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
+
   private ensureConfigured(): void {
     if (!this.purchaseService) {
       throw new Error('Fiken service not configured. Please run fiken_configure first.');
@@ -995,6 +1052,11 @@ class FikenMCPServer {
       } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
         // Handle MCP protocol over HTTP
         await this.handleMcpOverHttp(req, res);
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
+        // Provide OpenAPI spec as alternative
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify(this.getOpenApiSpec()));
       } else {
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(404);
