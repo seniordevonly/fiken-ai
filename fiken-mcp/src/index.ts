@@ -150,19 +150,308 @@ class FikenMCPServer {
   }
 
   private initializeTools(): void {
-    this.tools = [
-      { name: 'fiken_status', description: 'Check the current configuration status of the Fiken MCP server', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_configure', description: 'Configure the Fiken API connection with authentication token', inputSchema: { type: 'object', properties: { apiToken: { type: 'string', description: 'Fiken API authentication token' } }, required: ['apiToken'] } },
-      { name: 'fiken_get_purchases', description: 'Get all purchases for a company with optional filtering and pagination', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_create_purchase', description: 'Create a new purchase in Fiken', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_get_purchase', description: 'Get a specific purchase by ID', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_delete_purchase', description: 'Delete a purchase (creates reverse transaction)', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_create_purchase_draft', description: 'Create a new purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_get_purchase_draft', description: 'Get a specific purchase draft by ID', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_get_purchase_draft_attachments', description: 'Get all attachments for a purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_add_attachment_to_purchase_draft', description: 'Add an attachment to a purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
-      { name: 'fiken_create_purchase_payment', description: 'Create a payment for a purchase', inputSchema: { type: 'object', properties: {}, required: [] } }
-    ];
+    // Use the same detailed tool definitions as in setupToolHandlers
+    // This ensures consistency between HTTP and STDIO modes
+    this.tools = [];
+  }
+
+  private getToolsList(): Tool[] {
+    return [
+      {
+        name: 'fiken_status',
+        description: 'Check the current configuration status of the Fiken MCP server',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: 'fiken_configure',
+        description: 'Configure the Fiken API connection with authentication token',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            apiToken: {
+              type: 'string',
+              description: 'Fiken API authentication token',
+            },
+            baseUrl: {
+              type: 'string',
+              description: 'Base URL for Fiken API (optional, defaults to https://api.fiken.no/api/v2)',
+            },
+            timeout: {
+              type: 'number',
+              description: 'Request timeout in milliseconds (optional, defaults to 30000)',
+            },
+          },
+          required: ['apiToken'],
+        },
+      },
+      {
+        name: 'fiken_get_purchases',
+        description: 'Get all purchases for a company with optional filtering and pagination',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            params: {
+              type: 'object',
+              properties: {
+                page: { type: 'number', description: 'Page number (0-based)' },
+                pageSize: { type: 'number', description: 'Number of items per page (1-100)' },
+                date: { type: 'string', description: 'Filter by exact date (YYYY-MM-DD)' },
+                dateLe: { type: 'string', description: 'Filter by date less than or equal (YYYY-MM-DD)' },
+                dateLt: { type: 'string', description: 'Filter by date less than (YYYY-MM-DD)' },
+                dateGe: { type: 'string', description: 'Filter by date greater than or equal (YYYY-MM-DD)' },
+                dateGt: { type: 'string', description: 'Filter by date greater than (YYYY-MM-DD)' },
+                sortBy: { type: 'string', enum: ['date asc', 'date desc', 'createdDate asc', 'createdDate desc'] },
+                paid: { type: 'boolean', description: 'Filter by payment status' },
+              },
+            },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'fiken_create_purchase',
+        description: 'Create a new purchase in Fiken',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            purchase: {
+              type: 'object',
+              properties: {
+                date: { type: 'string', description: 'Purchase date (YYYY-MM-DD)' },
+                kind: { type: 'string', enum: ['cash_purchase', 'supplier'] },
+                currency: { type: 'string', description: '3-letter ISO currency code' },
+                identifier: { type: 'string', description: 'Invoice/sale number or similar' },
+                dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD)' },
+                supplierId: { type: 'number', description: 'Supplier contact ID' },
+                lines: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      description: { type: 'string', description: 'Line item description' },
+                      netPrice: { type: 'number', description: 'Net price in cents' },
+                      vat: { type: 'number', description: 'VAT amount in cents' },
+                      account: { type: 'string', description: 'Account code' },
+                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                    },
+                    required: ['description', 'vatType'],
+                  },
+                },
+              },
+              required: ['date', 'kind', 'currency', 'lines'],
+            },
+          },
+          required: ['purchase'],
+        },
+      },
+      {
+        name: 'fiken_get_purchase',
+        description: 'Get a specific purchase by ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            purchaseId: {
+              type: 'number',
+              description: 'Purchase ID',
+            },
+          },
+          required: ['purchaseId'],
+        },
+      },
+      {
+        name: 'fiken_delete_purchase',
+        description: 'Delete a purchase (creates reverse transaction)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            purchaseId: {
+              type: 'number',
+              description: 'Purchase ID to delete',
+            },
+            description: {
+              type: 'string',
+              description: 'Required description for the deletion',
+            },
+          },
+          required: ['purchaseId', 'description'],
+        },
+      },
+      {
+        name: 'fiken_create_purchase_draft',
+        description: 'Create a new purchase draft',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            draft: {
+              type: 'object',
+              properties: {
+                cash: { type: 'boolean', description: 'Whether this is a cash purchase' },
+                currency: { type: 'string', description: '3-letter ISO currency code (optional)' },
+                invoiceIssueDate: { type: 'string', description: 'Invoice issue date (YYYY-MM-DD, optional)' },
+                dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD, optional)' },
+                invoiceNumber: { type: 'string', description: 'Invoice number (optional)' },
+                contactId: { type: 'number', description: 'Contact ID (optional)' },
+                projectId: { type: 'number', description: 'Project ID (optional)' },
+                kid: { type: 'string', description: 'KID reference (optional)' },
+                paid: { type: 'boolean', description: 'Whether the draft is paid (defaults to false)' },
+                payments: {
+                  type: 'array',
+                  description: 'Required when paid=true. One or more payment bookings.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      date: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
+                      account: { type: 'string', description: 'Payment account (e.g. 1920:10001)' },
+                      amount: { type: 'number', description: 'Amount in cents (or minor units)' },
+                      amountInNok: { type: 'number', description: 'Amount in NOK cents (optional, for foreign currency payments)' },
+                      currency: { type: 'string', description: '3-letter ISO currency code (optional, defaults to NOK)' },
+                      fee: { type: 'number', description: 'Transaction fee in cents (optional, can be negative)' }
+                    },
+                    required: ['date', 'account', 'amount'],
+                    additionalProperties: false
+                  },
+                },
+                lines: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      text: { type: 'string', description: 'Line text (required, max 200 chars)' },
+                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                      incomeAccount: { type: 'string', description: 'Income account (required)' },
+                      net: { type: 'number', description: 'Net amount in cents (non-negative)' },
+                      gross: { type: 'number', description: 'Gross amount in cents (non-negative)' },
+                      projectId: { type: 'number', description: 'Project ID for this line (optional)' },
+                    },
+                    required: ['text', 'vatType', 'incomeAccount', 'net', 'gross'],
+                  },
+                },
+              },
+              required: ['cash', 'lines'],
+              additionalProperties: false
+            },
+          },
+          required: ['draft'],
+          additionalProperties: false
+        },
+      },
+      {
+        name: 'fiken_get_purchase_draft',
+        description: 'Get a specific purchase draft by ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            draftId: {
+              type: 'number',
+              description: 'Purchase draft ID',
+            },
+          },
+          required: ['draftId'],
+        },
+      },
+      {
+        name: 'fiken_get_purchase_draft_attachments',
+        description: 'Get all attachments for a purchase draft',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            draftId: {
+              type: 'number',
+              description: 'Purchase draft ID',
+            },
+          },
+          required: ['draftId'],
+        },
+      },
+      {
+        name: 'fiken_add_attachment_to_purchase_draft',
+        description: 'Add an attachment to a purchase draft',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            draftId: {
+              type: 'number',
+              description: 'Purchase draft ID',
+            },
+            attachment: {
+              type: 'object',
+              properties: {
+                filename: { type: 'string', description: 'Filename to use for the attachment' },
+                filePath: { type: 'string', description: 'Absolute or relative path to the file on disk' },
+                contentType: { type: 'string', description: 'Optional MIME type of the file' },
+                attachToPayment: { type: 'boolean', description: 'Whether to attach to payment if applicable' },
+              },
+              required: ['filename', 'filePath'],
+            },
+          },
+          required: ['draftId', 'attachment'],
+        },
+      },
+      {
+        name: 'fiken_create_purchase_payment',
+        description: 'Create a payment for a purchase',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            purchaseId: {
+              type: 'number',
+              description: 'Purchase ID',
+            },
+            payment: {
+              type: 'object',
+              properties: {
+                date: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
+                account: { type: 'string', description: 'Payment account' },
+                amount: { type: 'number', description: 'Payment amount in cents' },
+                currency: { type: 'string', description: '3-letter ISO currency code' },
+              },
+              required: ['date', 'account', 'amount'],
+            },
+          },
+          required: ['purchaseId', 'payment'],
+        },
+      },
+    ] as Tool[];
   }
 
   private setupErrorHandling(): void {
@@ -179,303 +468,10 @@ class FikenMCPServer {
   private setupToolHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
-        tools: [
-          {
-            name: 'fiken_status',
-            description: 'Check the current configuration status of the Fiken MCP server',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              required: [],
-            },
-          },
-          {
-            name: 'fiken_configure',
-            description: 'Configure the Fiken API connection with authentication token',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                apiToken: {
-                  type: 'string',
-                  description: 'Fiken API authentication token',
-                },
-                baseUrl: {
-                  type: 'string',
-                  description: 'Base URL for Fiken API (optional, defaults to https://api.fiken.no/api/v2)',
-                },
-                timeout: {
-                  type: 'number',
-                  description: 'Request timeout in milliseconds (optional, defaults to 30000)',
-                },
-              },
-              required: ['apiToken'],
-            },
-          },
-          {
-            name: 'fiken_get_purchases',
-            description: 'Get all purchases for a company with optional filtering and pagination',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                params: {
-                  type: 'object',
-                  properties: {
-                    page: { type: 'number', description: 'Page number (0-based)' },
-                    pageSize: { type: 'number', description: 'Number of items per page (1-100)' },
-                    date: { type: 'string', description: 'Filter by exact date (YYYY-MM-DD)' },
-                    dateLe: { type: 'string', description: 'Filter by date less than or equal (YYYY-MM-DD)' },
-                    dateLt: { type: 'string', description: 'Filter by date less than (YYYY-MM-DD)' },
-                    dateGe: { type: 'string', description: 'Filter by date greater than or equal (YYYY-MM-DD)' },
-                    dateGt: { type: 'string', description: 'Filter by date greater than (YYYY-MM-DD)' },
-                    sortBy: { type: 'string', enum: ['date asc', 'date desc', 'createdDate asc', 'createdDate desc'] },
-                    paid: { type: 'boolean', description: 'Filter by payment status' },
-                  },
-                },
-              },
-              required: [],
-            },
-          },
-          {
-            name: 'fiken_create_purchase',
-            description: 'Create a new purchase in Fiken',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                purchase: {
-                  type: 'object',
-                  properties: {
-                    date: { type: 'string', description: 'Purchase date (YYYY-MM-DD)' },
-                    kind: { type: 'string', enum: ['cash_purchase', 'supplier'] },
-                    currency: { type: 'string', description: '3-letter ISO currency code' },
-                    identifier: { type: 'string', description: 'Invoice/sale number or similar' },
-                    dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD)' },
-                    supplierId: { type: 'number', description: 'Supplier contact ID' },
-                    lines: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          description: { type: 'string', description: 'Line item description' },
-                          netPrice: { type: 'number', description: 'Net price in cents' },
-                          vat: { type: 'number', description: 'VAT amount in cents' },
-                          account: { type: 'string', description: 'Account code' },
-                          vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
-                        },
-                        required: ['description', 'vatType'],
-                      },
-                    },
-                  },
-                  required: ['date', 'kind', 'currency', 'lines'],
-                },
-              },
-              required: ['purchase'],
-            },
-          },
-          {
-            name: 'fiken_get_purchase',
-            description: 'Get a specific purchase by ID',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                purchaseId: {
-                  type: 'number',
-                  description: 'Purchase ID',
-                },
-              },
-              required: ['purchaseId'],
-            },
-          },
-          {
-            name: 'fiken_delete_purchase',
-            description: 'Delete a purchase (creates reverse transaction)',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                purchaseId: {
-                  type: 'number',
-                  description: 'Purchase ID to delete',
-                },
-                description: {
-                  type: 'string',
-                  description: 'Required description for the deletion',
-                },
-              },
-              required: ['purchaseId', 'description'],
-            },
-          },
-          {
-            name: 'fiken_create_purchase_draft',
-            description: 'Create a new purchase draft',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                draft: {
-                  type: 'object',
-                  properties: {
-                    cash: { type: 'boolean', description: 'Whether this is a cash purchase' },
-                    currency: { type: 'string', description: '3-letter ISO currency code (optional)' },
-                    invoiceIssueDate: { type: 'string', description: 'Invoice issue date (YYYY-MM-DD, optional)' },
-                    dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD, optional)' },
-                    invoiceNumber: { type: 'string', description: 'Invoice number (optional)' },
-                    contactId: { type: 'number', description: 'Contact ID (optional)' },
-                    projectId: { type: 'number', description: 'Project ID (optional)' },
-                    kid: { type: 'string', description: 'KID reference (optional)' },
-                    paid: { type: 'boolean', description: 'Whether the draft is paid (defaults to false)' },
-                    payments: {
-                      type: 'array',
-                      description: 'Required when paid=true. One or more payment bookings.',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          date: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
-                          account: { type: 'string', description: 'Payment account (e.g. 1920:10001)' },
-                          amount: { type: 'number', description: 'Amount in cents (or minor units)' },
-                          amountInNok: { type: 'number', description: 'Amount in NOK cents (optional, for foreign currency payments)' },
-                          currency: { type: 'string', description: '3-letter ISO currency code (optional, defaults to NOK)' },
-                          fee: { type: 'number', description: 'Transaction fee in cents (optional, can be negative)' }
-                        },
-                        required: ['date', 'account', 'amount'],
-                        additionalProperties: false
-                      },
-                    },
-                    lines: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          text: { type: 'string', description: 'Line text (required, max 200 chars)' },
-                          vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
-                          incomeAccount: { type: 'string', description: 'Income account (required)' },
-                          net: { type: 'number', description: 'Net amount in cents (non-negative)' },
-                          gross: { type: 'number', description: 'Gross amount in cents (non-negative)' },
-                          projectId: { type: 'number', description: 'Project ID for this line (optional)' },
-                        },
-                        required: ['text', 'vatType', 'incomeAccount', 'net', 'gross'],
-                      },
-                    },
-                  },
-                  required: ['cash', 'lines'],
-                  additionalProperties: false
-                },
-              },
-              required: ['draft'],
-              additionalProperties: false
-            },          },
-          {
-            name: 'fiken_get_purchase_draft',
-            description: 'Get a specific purchase draft by ID',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                draftId: {
-                  type: 'number',
-                  description: 'Purchase draft ID',
-                },
-              },
-              required: ['draftId'],
-            },
-          },
-          {
-            name: 'fiken_get_purchase_draft_attachments',
-            description: 'Get all attachments for a purchase draft',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                draftId: {
-                  type: 'number',
-                  description: 'Purchase draft ID',
-                },
-              },
-              required: ['draftId'],
-            },
-          },
-          {
-            name: 'fiken_add_attachment_to_purchase_draft',
-            description: 'Add an attachment to a purchase draft',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                draftId: {
-                  type: 'number',
-                  description: 'Purchase draft ID',
-                },
-                attachment: {
-                  type: 'object',
-                  properties: {
-                    filename: { type: 'string', description: 'Filename to use for the attachment' },
-                    filePath: { type: 'string', description: 'Absolute or relative path to the file on disk' },
-                    contentType: { type: 'string', description: 'Optional MIME type of the file' },
-                    attachToPayment: { type: 'boolean', description: 'Whether to attach to payment if applicable' },
-                  },
-                  required: ['filename', 'filePath'],
-                },
-              },
-              required: ['draftId', 'attachment'],
-            },
-          },
-          {
-            name: 'fiken_create_purchase_payment',
-            description: 'Create a payment for a purchase',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                companySlug: {
-                  type: 'string',
-                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
-                },
-                purchaseId: {
-                  type: 'number',
-                  description: 'Purchase ID',
-                },
-                payment: {
-                  type: 'object',
-                  properties: {
-                    date: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
-                    account: { type: 'string', description: 'Payment account' },
-                    amount: { type: 'number', description: 'Payment amount in cents' },
-                    currency: { type: 'string', description: '3-letter ISO currency code' },
-                  },
-                  required: ['date', 'account', 'amount'],
-                },
-              },
-              required: ['purchaseId', 'payment'],
-            },
-          },
-        ] as Tool[],
+        tools: this.getToolsList()
       };
     });
+
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
@@ -889,28 +885,79 @@ class FikenMCPServer {
             res.end();
             return;
           } else if (mcpRequest.method === 'tools/list') {
-            // Return tools list directly
+            // Return the same detailed tools list as STDIO mode
             mcpResponse = {
               jsonrpc: '2.0',
               id: mcpRequest.id,
               result: {
-                tools: this.tools
+                tools: this.getToolsList()
               }
             };
           } else if (mcpRequest.method === 'tools/call') {
-            // Handle tool calls - for now return a simple response
-            mcpResponse = {
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              result: {
-                content: [
-                  {
-                    type: 'text',
-                    text: 'MCP over HTTP tool calling not fully implemented yet. Please use stdio mode for full functionality.'
-                  }
-                ]
+            // Handle tool calls - execute the actual tool
+            try {
+              const { name, arguments: args } = mcpRequest.params;
+              let toolResult;
+
+              switch (name) {
+                case 'fiken_status':
+                  toolResult = await this.handleStatus(args);
+                  break;
+                case 'fiken_configure':
+                  toolResult = await this.handleConfigure(args);
+                  break;
+                case 'fiken_get_purchases':
+                  toolResult = await this.handleGetPurchases(args);
+                  break;
+                case 'fiken_create_purchase':
+                  toolResult = await this.handleCreatePurchase(args);
+                  break;
+                case 'fiken_get_purchase':
+                  toolResult = await this.handleGetPurchase(args);
+                  break;
+                case 'fiken_delete_purchase':
+                  toolResult = await this.handleDeletePurchase(args);
+                  break;
+                case 'fiken_create_purchase_draft':
+                  toolResult = await this.handleCreatePurchaseDraft(args);
+                  break;
+                case 'fiken_get_purchase_draft':
+                  toolResult = await this.handleGetPurchaseDraft(args);
+                  break;
+                case 'fiken_get_purchase_draft_attachments':
+                  toolResult = await this.handleGetPurchaseDraftAttachments(args);
+                  break;
+                case 'fiken_add_attachment_to_purchase_draft':
+                  toolResult = await this.handleAddAttachmentToPurchaseDraft(args);
+                  break;
+                case 'fiken_create_purchase_payment':
+                  toolResult = await this.handleCreatePurchasePayment(args);
+                  break;
+                default:
+                  throw new Error(`Unknown tool: ${name}`);
               }
-            };
+
+              mcpResponse = {
+                jsonrpc: '2.0',
+                id: mcpRequest.id,
+                result: toolResult
+              };
+            } catch (error) {
+              const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+              mcpResponse = {
+                jsonrpc: '2.0',
+                id: mcpRequest.id,
+                result: {
+                  content: [
+                    {
+                      type: 'text',
+                      text: `Error: ${errorMessage}`,
+                    },
+                  ],
+                  isError: true,
+                }
+              };
+            }
           } else {
             mcpResponse = {
               jsonrpc: '2.0',
@@ -1042,7 +1089,7 @@ class FikenMCPServer {
           name: 'Fiken MCP Server',
           version: '0.1.0',
           status: 'running',
-          tools: this.tools.map(tool => tool.name),
+          tools: this.getToolsList().map(tool => tool.name),
           protocols: ['mcp', 'http']
         }));
       } else if (req.method === 'GET' && parsedUrl.pathname === '/health') {
