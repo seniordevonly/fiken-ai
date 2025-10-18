@@ -17,6 +17,7 @@ import {
 import { FikenPurchaseService, VatType, logger } from 'fiken-shared';
 import { z } from 'zod';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 
 // VAT Type enum for validation
 const VatTypeEnum = z.enum([
@@ -125,6 +126,7 @@ class FikenMCPServer {
   private server: Server;
   private purchaseService: FikenPurchaseService | null = null;
   private defaultCompanySlug: string | null = null;
+  private tools: Tool[] = [];
 
   constructor() {
     this.server = new Server(
@@ -141,8 +143,25 @@ class FikenMCPServer {
 
     // Initialize with environment variables if available
     this.initializeFromEnvironment();
+    this.initializeTools();
     this.setupToolHandlers();
     this.setupErrorHandling();
+  }
+
+  private initializeTools(): void {
+    this.tools = [
+      { name: 'fiken_status', description: 'Check the current configuration status of the Fiken MCP server', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_configure', description: 'Configure the Fiken API connection with authentication token', inputSchema: { type: 'object', properties: { apiToken: { type: 'string', description: 'Fiken API authentication token' } }, required: ['apiToken'] } },
+      { name: 'fiken_get_purchases', description: 'Get all purchases for a company with optional filtering and pagination', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_create_purchase', description: 'Create a new purchase in Fiken', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_get_purchase', description: 'Get a specific purchase by ID', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_delete_purchase', description: 'Delete a purchase (creates reverse transaction)', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_create_purchase_draft', description: 'Create a new purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_get_purchase_draft', description: 'Get a specific purchase draft by ID', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_get_purchase_draft_attachments', description: 'Get all attachments for a purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_add_attachment_to_purchase_draft', description: 'Add an attachment to a purchase draft', inputSchema: { type: 'object', properties: {}, required: [] } },
+      { name: 'fiken_create_purchase_payment', description: 'Create a payment for a purchase', inputSchema: { type: 'object', properties: {}, required: [] } }
+    ];
   }
 
   private setupErrorHandling(): void {
@@ -839,9 +858,39 @@ class FikenMCPServer {
   }
 
   async run(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('Fiken MCP server running on stdio');
+    // Start MCP server on stdio for local development
+    if (!process.env.PORT) {
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      console.error('Fiken MCP server running on stdio');
+      return;
+    }
+
+    // Start HTTP server for Heroku deployment
+    const port = parseInt(process.env.PORT || '3000', 10);
+    const httpServer = http.createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          name: 'Fiken MCP Server',
+          version: '0.1.0',
+          status: 'running',
+          tools: this.tools.map(tool => tool.name)
+        }));
+      } else if (req.method === 'GET' && req.url === '/health') {
+        res.writeHead(200);
+        res.end(JSON.stringify({ status: 'healthy' }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Not found' }));
+      }
+    });
+
+    httpServer.listen(port, () => {
+      console.error(`Fiken MCP server running on HTTP port ${port}`);
+    });
   }
 }
 
