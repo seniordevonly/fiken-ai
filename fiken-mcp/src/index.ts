@@ -18,6 +18,7 @@ import { FikenPurchaseService, VatType, logger } from 'fiken-shared';
 import { z } from 'zod';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import url from 'node:url';
 
 // VAT Type enum for validation
 const VatTypeEnum = z.enum([
@@ -851,6 +852,83 @@ class FikenMCPServer {
     };
   }
 
+  private async handleMcpOverHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', async () => {
+        try {
+          const mcpRequest = JSON.parse(body);
+          let mcpResponse;
+          
+          // Handle MCP requests
+          if (mcpRequest.method === 'tools/list') {
+            // Return tools list directly
+            mcpResponse = {
+              jsonrpc: '2.0',
+              id: mcpRequest.id,
+              result: {
+                tools: this.tools
+              }
+            };
+          } else if (mcpRequest.method === 'tools/call') {
+            // Handle tool calls - for now return a simple response
+            mcpResponse = {
+              jsonrpc: '2.0',
+              id: mcpRequest.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'MCP over HTTP tool calling not fully implemented yet. Please use stdio mode for full functionality.'
+                  }
+                ]
+              }
+            };
+          } else {
+            mcpResponse = {
+              jsonrpc: '2.0',
+              id: mcpRequest.id,
+              error: {
+                code: -32601,
+                message: 'Method not found'
+              }
+            };
+          }
+          
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify(mcpResponse));
+        } catch (error) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: {
+              code: -32700,
+              message: 'Parse error'
+            }
+          }));
+        }
+      });
+    } catch (error) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32603,
+          message: 'Internal error'
+        }
+      }));
+    }
+  }
+
   private ensureConfigured(): void {
     if (!this.purchaseService) {
       throw new Error('Fiken service not configured. Please run fiken_configure first.');
@@ -868,21 +946,39 @@ class FikenMCPServer {
 
     // Start HTTP server for Heroku deployment
     const port = parseInt(process.env.PORT || '3000', 10);
-    const httpServer = http.createServer((req, res) => {
-      res.setHeader('Content-Type', 'application/json');
+    const httpServer = http.createServer(async (req, res) => {
+      // Enable CORS for ChatGPT
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       
-      if (req.method === 'GET' && req.url === '/') {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      
+      const parsedUrl = url.parse(req.url!, true);
+      
+      if (req.method === 'GET' && parsedUrl.pathname === '/') {
+        res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
         res.end(JSON.stringify({
           name: 'Fiken MCP Server',
           version: '0.1.0',
           status: 'running',
-          tools: this.tools.map(tool => tool.name)
+          tools: this.tools.map(tool => tool.name),
+          protocols: ['mcp', 'http']
         }));
-      } else if (req.method === 'GET' && req.url === '/health') {
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/health') {
+        res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
         res.end(JSON.stringify({ status: 'healthy' }));
+      } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
+        // Handle MCP protocol over HTTP
+        await this.handleMcpOverHttp(req, res);
       } else {
+        res.setHeader('Content-Type', 'application/json');
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Not found' }));
       }
