@@ -870,11 +870,19 @@ class FikenMCPServer {
               result: {
                 protocolVersion: '2024-11-05',
                 capabilities: {
-                  tools: {}
+                  tools: {},
+                  authentication: {
+                    oauth2: {
+                      authorizationUrl: `https://${req.headers.host}/oauth/authorize`,
+                      tokenUrl: `https://${req.headers.host}/oauth/token`,
+                      scopes: ['fiken:read', 'fiken:write']
+                    }
+                  }
                 },
                 serverInfo: {
                   name: 'fiken-mcp',
-                  version: '0.1.0'
+                  version: '0.1.0',
+                  authentication: 'oauth2'
                 }
               }
             };
@@ -1117,6 +1125,60 @@ class FikenMCPServer {
     }));
   }
 
+  private async handleMcpOverHttpWithAuth(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', async () => {
+        try {
+          const mcpRequest = JSON.parse(body);
+          
+          // Allow initialize method without authentication for OAuth discovery
+          if (mcpRequest.method === 'initialize') {
+            await this.handleMcpOverHttp(req, res);
+            return;
+          }
+          
+          // All other methods require authentication
+          if (!this.authenticateRequest(req)) {
+            this.sendAuthError(res);
+            return;
+          }
+          
+          // Handle authenticated MCP request
+          await this.handleMcpOverHttp(req, res);
+          
+        } catch (error) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: {
+              code: -32700,
+              message: 'Parse error'
+            }
+          }));
+        }
+      });
+      
+    } catch (error) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32603,
+          message: 'Internal error'
+        }
+      }));
+    }
+  }
+
   private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
       let body = '';
@@ -1249,6 +1311,19 @@ class FikenMCPServer {
           scopes_supported: ['fiken:read', 'fiken:write'],
           response_types_supported: ['token']
         }));
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/openid-configuration') {
+        // OpenID Connect Discovery Endpoint (what ChatGPT actually looks for)
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          issuer: `https://${req.headers.host}`,
+          token_endpoint: `https://${req.headers.host}/oauth/token`,
+          grant_types_supported: ['client_credentials'],
+          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+          scopes_supported: ['fiken:read', 'fiken:write'],
+          response_types_supported: ['token'],
+          subject_types_supported: ['public']
+        }));
       } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
         // OAuth 2.0 Token Endpoint
         await this.handleOAuthToken(req, res);
@@ -1264,14 +1339,22 @@ class FikenMCPServer {
           scopes_supported: ['fiken:read', 'fiken:write'],
           response_types_supported: ['token']
         }));
+      } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/openid-configuration') {
+        // OpenID Connect Discovery Endpoint under MCP path (what ChatGPT looks for)
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          issuer: `https://${req.headers.host}`,
+          token_endpoint: `https://${req.headers.host}/oauth/token`,
+          grant_types_supported: ['client_credentials'],
+          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+          scopes_supported: ['fiken:read', 'fiken:write'],
+          response_types_supported: ['token'],
+          subject_types_supported: ['public']
+        }));
       } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
-        // Protected endpoint - require OAuth authentication
-        if (!this.authenticateRequest(req)) {
-          this.sendAuthError(res);
-          return;
-        }
-        // Handle MCP protocol over HTTP
-        await this.handleMcpOverHttp(req, res);
+        // Handle MCP protocol over HTTP with conditional authentication
+        await this.handleMcpOverHttpWithAuth(req, res);
       } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
         // Protected endpoint - require OAuth authentication
         if (!this.authenticateRequest(req)) {
