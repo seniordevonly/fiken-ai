@@ -1,0 +1,1 @@
+web: cd fiken-mcp && npm run build && npm start

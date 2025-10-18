@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { FikenPurchaseService, VatType, logger } from 'fiken-shared';
 import { z } from 'zod';
+import fs from 'node:fs/promises';
 
 // VAT Type enum for validation
 const VatTypeEnum = z.enum([
@@ -81,6 +82,15 @@ const PurchaseRequestSchema = z.object({
   })).min(1, 'At least one line is required'),
 });
 
+const PaymentSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format'),
+  account: z.string().min(1, 'Account is required'),
+  amount: z.number().int().positive('Amount must be positive'),
+  amountInNok: z.number().int().positive().optional(),
+  currency: z.string().length(3).optional(),
+  fee: z.number().int().optional(),
+});
+
 const DraftRequestSchema = z.object({
   cash: z.boolean(),
   currency: z.string().length(3).optional(),
@@ -91,6 +101,7 @@ const DraftRequestSchema = z.object({
   projectId: z.number().int().positive().optional(),
   kid: z.string().optional(),
   paid: z.boolean().default(false),
+  payments: z.array(PaymentSchema).optional(),
   lines: z.array(z.object({
     text: z.string().min(1, 'Line text is required').max(200, 'Text must be 200 characters or less'),
     vatType: VatTypeEnum,
@@ -99,15 +110,15 @@ const DraftRequestSchema = z.object({
     gross: z.number().int().min(0, 'Gross amount must be non-negative'),
     projectId: z.number().int().positive().optional(),
   })).min(1, 'At least one line is required'),
-});
-
-const PaymentSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format'),
-  account: z.string().min(1, 'Account is required'),
-  amount: z.number().int().positive('Amount must be positive'),
-  amountInNok: z.number().int().positive().optional(),
-  currency: z.string().length(3).optional(),
-  fee: z.number().int().optional(),
+}).refine((data) => {
+  // When paid is true, payments array is required and must have at least one payment
+  if (data.paid && (!data.payments || data.payments.length === 0)) {
+    return false;
+  }
+  return true;
+}, {
+  message: 'When paid is true, at least one payment is required',
+  path: ['payments'],
 });
 
 class FikenMCPServer {
@@ -302,25 +313,53 @@ class FikenMCPServer {
                   type: 'object',
                   properties: {
                     cash: { type: 'boolean', description: 'Whether this is a cash purchase' },
-                    currency: { type: 'string', description: '3-letter ISO currency code' },
-                    contactId: { type: 'number', description: 'Contact ID' },
+                    currency: { type: 'string', description: '3-letter ISO currency code (optional)' },
+                    invoiceIssueDate: { type: 'string', description: 'Invoice issue date (YYYY-MM-DD, optional)' },
+                    dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD, optional)' },
+                    invoiceNumber: { type: 'string', description: 'Invoice number (optional)' },
+                    contactId: { type: 'number', description: 'Contact ID (optional)' },
+                    projectId: { type: 'number', description: 'Project ID (optional)' },
+                    kid: { type: 'string', description: 'KID reference (optional)' },
+                    paid: { type: 'boolean', description: 'Whether the draft is paid (defaults to false)' },
+                    payments: {
+                      type: 'array',
+                      description: 'Required when paid=true. One or more payment bookings.',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          date: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
+                          account: { type: 'string', description: 'Payment account (e.g. 1920:10001)' },
+                          amount: { type: 'number', description: 'Amount in cents (or minor units)' },
+                          amountInNok: { type: 'number', description: 'Amount in NOK cents (optional, for foreign currency payments)' },
+                          currency: { type: 'string', description: '3-letter ISO currency code (optional, defaults to NOK)' },
+                          fee: { type: 'number', description: 'Transaction fee in cents (optional, can be negative)' }
+                        },
+                        required: ['date', 'account', 'amount'],
+                        additionalProperties: false
+                      },
+                    },
                     lines: {
                       type: 'array',
                       items: {
                         type: 'object',
                         properties: {
-                          description: { type: 'string', description: 'Line item description' },
-                          netPrice: { type: 'number', description: 'Net price in cents' },
-                          vatType: { type: 'string', description: 'VAT type' },
+                          text: { type: 'string', description: 'Line text (required, max 200 chars)' },
+                          vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                          incomeAccount: { type: 'string', description: 'Income account (required)' },
+                          net: { type: 'number', description: 'Net amount in cents (non-negative)' },
+                          gross: { type: 'number', description: 'Gross amount in cents (non-negative)' },
+                          projectId: { type: 'number', description: 'Project ID for this line (optional)' },
                         },
-                        required: ['description', 'vatType'],
+                        required: ['text', 'vatType', 'incomeAccount', 'net', 'gross'],
                       },
                     },
                   },
                   required: ['cash', 'lines'],
+                  additionalProperties: false
                 },
               },
               required: ['draft'],
+              additionalProperties: false
             },          },
           {
             name: 'fiken_get_purchase_draft',
@@ -338,6 +377,52 @@ class FikenMCPServer {
                 },
               },
               required: ['draftId'],
+            },
+          },
+          {
+            name: 'fiken_get_purchase_draft_attachments',
+            description: 'Get all attachments for a purchase draft',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                companySlug: {
+                  type: 'string',
+                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+                },
+                draftId: {
+                  type: 'number',
+                  description: 'Purchase draft ID',
+                },
+              },
+              required: ['draftId'],
+            },
+          },
+          {
+            name: 'fiken_add_attachment_to_purchase_draft',
+            description: 'Add an attachment to a purchase draft',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                companySlug: {
+                  type: 'string',
+                  description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+                },
+                draftId: {
+                  type: 'number',
+                  description: 'Purchase draft ID',
+                },
+                attachment: {
+                  type: 'object',
+                  properties: {
+                    filename: { type: 'string', description: 'Filename to use for the attachment' },
+                    filePath: { type: 'string', description: 'Absolute or relative path to the file on disk' },
+                    contentType: { type: 'string', description: 'Optional MIME type of the file' },
+                    attachToPayment: { type: 'boolean', description: 'Whether to attach to payment if applicable' },
+                  },
+                  required: ['filename', 'filePath'],
+                },
+              },
+              required: ['draftId', 'attachment'],
             },
           },
           {
@@ -393,6 +478,10 @@ class FikenMCPServer {
             return await this.handleCreatePurchaseDraft(args);
           case 'fiken_get_purchase_draft':
             return await this.handleGetPurchaseDraft(args);
+          case 'fiken_get_purchase_draft_attachments':
+            return await this.handleGetPurchaseDraftAttachments(args);
+          case 'fiken_add_attachment_to_purchase_draft':
+            return await this.handleAddAttachmentToPurchaseDraft(args);
           case 'fiken_create_purchase_payment':
             return await this.handleCreatePurchasePayment(args);
           default:
@@ -521,6 +610,74 @@ class FikenMCPServer {
     };
   }
 
+  private async handleGetPurchaseDraftAttachments(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, draftId } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    CompanySlugSchema.parse(finalCompanySlug);
+    z.number().int().positive().parse(draftId);
+    
+    const result = await this.purchaseService!.getPurchaseDraftAttachments(finalCompanySlug, draftId);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleAddAttachmentToPurchaseDraft(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, draftId, attachment } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    CompanySlugSchema.parse(finalCompanySlug);
+    z.number().int().positive().parse(draftId);
+    
+    // Validate attachment shape
+    const AttachmentInputSchema = z.object({
+      filename: z.string().min(1),
+      filePath: z.string().min(1),
+      contentType: z.string().optional(),
+      attachToPayment: z.boolean().optional(),
+    });
+    const att = AttachmentInputSchema.parse(attachment);
+    
+    // Read file from disk
+    const fileBuffer = await fs.readFile(att.filePath);
+
+    const upload = {
+      filename: att.filename,
+      file: fileBuffer,
+      attachToPayment: att.attachToPayment,
+    };
+    
+    await this.purchaseService!.addAttachmentToPurchaseDraft(finalCompanySlug, draftId, upload);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Attachment uploaded to purchase draft successfully.',
+        },
+      ],
+    };
+  }
+
   private async handleCreatePurchase(args: any) {
     this.ensureConfigured();
     
@@ -608,8 +765,10 @@ class FikenMCPServer {
     }
     
     CompanySlugSchema.parse(finalCompanySlug);
+    logger.info('Creating purchase draft', { draft });
+
     const validatedDraft = DraftRequestSchema.parse(draft);
-    
+    logger.info('Creating purchase draft, validatedDraft', { validatedDraft });
     const result = await this.purchaseService!.createPurchaseDraft(finalCompanySlug, validatedDraft);
     
     return {
