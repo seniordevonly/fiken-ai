@@ -1,1 +1,1 @@
-mcp-fiken: npm start
+web: npm start
