@@ -57,7 +57,7 @@ const PurchaseQueryParamsSchema = z.object({
   dateGe: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateGt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   sortBy: z.enum(['date asc', 'date desc', 'createdDate asc', 'createdDate desc']).optional(),
-  paid: z.boolean().default(false),
+  paid: z.boolean().optional(),
 });
 
 const PurchaseRequestSchema = z.object({
@@ -613,7 +613,7 @@ class FikenMCPServer {
     CompanySlugSchema.parse(finalCompanySlug);
     
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
-    
+    logger.info('Get all purchaseses, queryParams', { queryParams });
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
     
     return {
