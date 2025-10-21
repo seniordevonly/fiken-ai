@@ -16,6 +16,14 @@ To monitor the MCP server logs:
 tail -f /Users/tha022/Library/Logs/Claude/mcp-server-fikenAI.log
 ```
 
+## MCP Heroku
+```bash
+heroku ai:models:create MODEL_NAME -a your-app-name --as INFERENCE
+heroku ai:models:create claude-3-7-sonnet -a fiken-ai --as INFERENCE
+heroku ai:models -a fiken-ai
+```
+
+
 ## Quick Start
 
 The MCP server is automatically configured via environment variables in Claude Desktop configuration.
