@@ -1,1 +1,1 @@
-web: npm start
+mpc-fiken: npm start
