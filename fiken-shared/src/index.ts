@@ -10,3 +10,4 @@ export * from './utils/logger';
 // Services
 export * from './services/fiken-base.service';
 export * from './services/fiken-purchase.service';
+export * from './services/fiken-invoice.service';

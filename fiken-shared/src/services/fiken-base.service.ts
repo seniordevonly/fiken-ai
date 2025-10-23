@@ -386,4 +386,65 @@ export class FikenBaseService {
     }
     return date.toISOString().split('T')[0];
   }
+
+  /**
+   * Post multipart form data (for attachments)
+   */
+  protected async postMultipart<T>(
+    endpoint: string,
+    attachment: any,
+    options?: RequestOptions
+  ): Promise<FikenApiResponse<T>> {
+    const formData = new FormData();
+    
+    if (attachment.filename) {
+      formData.append('filename', attachment.filename);
+    }
+    
+    if (attachment.comment) {
+      formData.append('comment', attachment.comment);
+    }
+    
+    if (attachment.file) {
+      formData.append('file', attachment.file);
+    }
+    
+    return this.uploadMultipart<T>(endpoint, formData, options);
+  }
+
+  /**
+   * Validate date format (yyyy-mm-dd)
+   */
+  protected isValidDate(dateString: string): boolean {
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(dateString)) {
+      return false;
+    }
+    
+    const date = new Date(dateString);
+    return date instanceof Date && !isNaN(date.getTime()) && 
+           date.toISOString().split('T')[0] === dateString;
+  }
+
+  /**
+   * Validate attachment
+   */
+  protected validateAttachment(attachment: any): void {
+    if (!attachment.filename) {
+      throw new Error('Attachment filename is required');
+    }
+    
+    const validExtensions = ['.png', '.jpeg', '.jpg', '.gif', '.pdf'];
+    const hasValidExtension = validExtensions.some(ext => 
+      attachment.filename.toLowerCase().endsWith(ext)
+    );
+    
+    if (!hasValidExtension) {
+      throw new Error(`Invalid file extension. Must be one of: ${validExtensions.join(', ')}`);
+    }
+    
+    if (!attachment.file) {
+      throw new Error('Attachment file is required');
+    }
+  }
 }

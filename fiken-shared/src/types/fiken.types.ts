@@ -195,3 +195,207 @@ export interface FikenApiResponse<T> {
   data: T;
   headers?: FikenPaginationHeaders;
 }
+
+// ========== INVOICE TYPES ==========
+
+// Invoice Line Request interface
+export interface InvoiceLineRequest {
+  productId?: number;
+  description?: string;
+  count?: number;
+  unitPrice?: number; // in cents
+  unitAmount?: number; // in cents
+  discount?: number; // percentage
+  vatType?: VatType;
+  incomeAccount?: string;
+  comment?: string;
+  projectId?: number;
+}
+
+// Invoice Line Result interface
+export interface InvoiceLineResult {
+  description?: string;
+  count?: number;
+  unitPrice?: number; // in cents
+  unitAmount?: number; // in cents
+  discount?: number; // percentage
+  vatType?: VatType;
+  incomeAccount?: string;
+  comment?: string;
+  net?: number; // in cents
+  vat?: number; // in cents
+  gross?: number; // in cents
+  netInNok?: number; // in cents
+  vatInNok?: number; // in cents
+  grossInNok?: number; // in cents
+  projectId?: number;
+}
+
+// Invoice Request interface
+export interface InvoiceRequest {
+  issueDate: string; // format: yyyy-mm-dd
+  dueDate?: string; // format: yyyy-mm-dd
+  contactId?: number;
+  contactPersonId?: number;
+  invoiceText?: string;
+  yourReference?: string;
+  ourReference?: string;
+  orderReference?: string;
+  projectId?: number;
+  currency?: string; // ISO 4217 currency code
+  invoiceAccount?: string;
+  lines: InvoiceLineRequest[];
+  bankAccountCode?: string;
+  cash?: boolean;
+}
+
+// Invoice Result interface
+export interface InvoiceResult {
+  invoiceId: number;
+  createdDate: string; // format: yyyy-mm-dd
+  lastModifiedDate: string; // format: yyyy-mm-dd
+  invoiceNumber: number;
+  kid?: string;
+  issueDate: string; // format: yyyy-mm-dd
+  dueDate: string; // format: yyyy-mm-dd
+  originalDueDate?: string; // format: yyyy-mm-dd
+  net: number; // in cents
+  vat: number; // in cents
+  gross: number; // in cents
+  netInNok: number; // in cents
+  vatInNok: number; // in cents
+  grossInNok: number; // in cents
+  cash?: boolean;
+  invoiceText?: string;
+  yourReference?: string;
+  ourReference?: string;
+  orderReference?: string;
+  invoiceDraftUuid?: string;
+  address?: Address;
+  lines: InvoiceLineResult[];
+  currency?: string;
+  contact?: Contact;
+  contactPerson?: Contact;
+  project?: ProjectResult;
+  settled?: boolean;
+  settledDate?: string; // format: yyyy-mm-dd
+  written?: boolean;
+  sent?: boolean;
+  sentDate?: string; // format: yyyy-mm-dd
+  sentManually?: boolean;
+  sentManuallyDate?: string; // format: yyyy-mm-dd
+  deleted?: boolean;
+  deletedDate?: string; // format: yyyy-mm-dd
+}
+
+// Update Invoice Request interface
+export interface UpdateInvoiceRequest {
+  dueDate?: string; // format: yyyy-mm-dd
+  sentManually?: boolean;
+}
+
+// Send Invoice Request interface
+export interface SendInvoiceRequest {
+  invoiceId: number;
+  method: 'email' | 'ehf' | 'vipps' | 'auto';
+  recipientName?: string;
+  recipientEmail?: string;
+  message?: string;
+  includeDocumentAttachments?: boolean;
+}
+
+// Invoice Draft Request interface
+export interface InvoiceDraftRequest {
+  issueDate?: string; // format: yyyy-mm-dd
+  dueDate?: string; // format: yyyy-mm-dd
+  contactId?: number;
+  contactPersonId?: number;
+  invoiceText?: string;
+  yourReference?: string;
+  ourReference?: string;
+  orderReference?: string;
+  projectId?: number;
+  currency?: string; // ISO 4217 currency code
+  invoiceAccount?: string;
+  lines: InvoiceLineRequest[];
+  bankAccountCode?: string;
+  cash?: boolean;
+}
+
+// Invoice Draft Result interface
+export interface InvoiceDraftResult {
+  draftId: number;
+  uuid: string;
+  issueDate?: string; // format: yyyy-mm-dd
+  dueDate?: string; // format: yyyy-mm-dd
+  contactId?: number;
+  contactPersonId?: number;
+  invoiceText?: string;
+  yourReference?: string;
+  ourReference?: string;
+  orderReference?: string;
+  projectId?: number;
+  currency?: string; // ISO 4217 currency code
+  invoiceAccount?: string;
+  lines: InvoiceLineResult[];
+  bankAccountCode?: string;
+  cash?: boolean;
+  contact?: Contact;
+  contactPerson?: Contact;
+  project?: ProjectResult;
+  net?: number; // in cents
+  vat?: number; // in cents
+  gross?: number; // in cents
+  netInNok?: number; // in cents
+  vatInNok?: number; // in cents
+  grossInNok?: number; // in cents
+  attachments?: Attachment[];
+}
+
+// Counter interface
+export interface Counter {
+  value?: number;
+}
+
+// Address interface
+export interface Address {
+  name?: string;
+  address?: string;
+  postalCode?: string;
+  postalPlace?: string;
+  country?: string;
+}
+
+// Invoice Query Parameters interface
+export interface InvoiceQueryParams {
+  page?: number;
+  pageSize?: number;
+  issueDate?: string; // format: yyyy-mm-dd
+  issueDateLe?: string; // format: yyyy-mm-dd
+  issueDateLt?: string; // format: yyyy-mm-dd
+  issueDateGe?: string; // format: yyyy-mm-dd
+  issueDateGt?: string; // format: yyyy-mm-dd
+  lastModified?: string; // format: yyyy-mm-dd
+  lastModifiedLe?: string; // format: yyyy-mm-dd
+  lastModifiedLt?: string; // format: yyyy-mm-dd
+  lastModifiedGe?: string; // format: yyyy-mm-dd
+  lastModifiedGt?: string; // format: yyyy-mm-dd
+  dueDate?: string; // format: yyyy-mm-dd
+  dueDateLe?: string; // format: yyyy-mm-dd
+  dueDateLt?: string; // format: yyyy-mm-dd
+  dueDateGe?: string; // format: yyyy-mm-dd
+  dueDateGt?: string; // format: yyyy-mm-dd
+  customerId?: number;
+  settled?: boolean;
+  orderReference?: string;
+  invoiceDraftUuid?: string;
+  invoiceNumber?: string;
+}
+
+// Invoice Draft Query Parameters interface
+export interface InvoiceDraftQueryParams {
+  page?: number;
+  pageSize?: number;
+  orderReference?: string;
+  uuid?: string;
+}

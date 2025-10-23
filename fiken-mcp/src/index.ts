@@ -14,7 +14,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { FikenPurchaseService, VatType, logger } from 'fiken-shared';
+import { FikenPurchaseService, FikenInvoiceService, VatType, logger } from 'fiken-shared';
 import { z } from 'zod';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -126,6 +126,7 @@ const DraftRequestSchema = z.object({
 class FikenMCPServer {
   private server: Server;
   private purchaseService: FikenPurchaseService | null = null;
+  private invoiceService: FikenInvoiceService | null = null;
   private defaultCompanySlug: string | null = null;
   private tools: Tool[] = [];
 
@@ -451,6 +452,222 @@ class FikenMCPServer {
           required: ['purchaseId', 'payment'],
         },
       },
+      // ========== INVOICE TOOLS ==========
+      {
+        name: 'fiken_get_invoices',
+        description: 'Get all invoices for a company with optional filtering and pagination',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            params: {
+              type: 'object',
+              properties: {
+                page: { type: 'number', description: 'Page number (0-based)' },
+                pageSize: { type: 'number', description: 'Number of items per page (1-100)' },
+                issueDate: { type: 'string', description: 'Filter by exact issue date (YYYY-MM-DD)' },
+                issueDateLe: { type: 'string', description: 'Filter by issue date less than or equal (YYYY-MM-DD)' },
+                issueDateLt: { type: 'string', description: 'Filter by issue date less than (YYYY-MM-DD)' },
+                issueDateGe: { type: 'string', description: 'Filter by issue date greater than or equal (YYYY-MM-DD)' },
+                issueDateGt: { type: 'string', description: 'Filter by issue date greater than (YYYY-MM-DD)' },
+                dueDate: { type: 'string', description: 'Filter by exact due date (YYYY-MM-DD)' },
+                dueDateLe: { type: 'string', description: 'Filter by due date less than or equal (YYYY-MM-DD)' },
+                dueDateLt: { type: 'string', description: 'Filter by due date less than (YYYY-MM-DD)' },
+                dueDateGe: { type: 'string', description: 'Filter by due date greater than or equal (YYYY-MM-DD)' },
+                dueDateGt: { type: 'string', description: 'Filter by due date greater than (YYYY-MM-DD)' },
+                customerId: { type: 'number', description: 'Filter by customer contact ID' },
+                settled: { type: 'boolean', description: 'Filter by settlement status' },
+                orderReference: { type: 'string', description: 'Filter by order reference' },
+                invoiceNumber: { type: 'string', description: 'Filter by invoice number' },
+              },
+            },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'fiken_create_invoice',
+        description: 'Create a new invoice in Fiken',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            invoice: {
+              type: 'object',
+              properties: {
+                issueDate: { type: 'string', description: 'Invoice issue date (YYYY-MM-DD)' },
+                dueDate: { type: 'string', description: 'Invoice due date (YYYY-MM-DD)' },
+                contactId: { type: 'number', description: 'Customer contact ID' },
+                invoiceText: { type: 'string', description: 'Invoice description/comment' },
+                yourReference: { type: 'string', description: 'Your reference' },
+                ourReference: { type: 'string', description: 'Our reference' },
+                orderReference: { type: 'string', description: 'Order reference' },
+                currency: { type: 'string', description: '3-letter ISO currency code' },
+                lines: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      productId: { type: 'number', description: 'Product ID (if invoicing existing product)' },
+                      description: { type: 'string', description: 'Line item description' },
+                      count: { type: 'number', description: 'Quantity' },
+                      unitPrice: { type: 'number', description: 'Unit price in cents' },
+                      unitAmount: { type: 'number', description: 'Unit amount in cents' },
+                      discount: { type: 'number', description: 'Discount percentage (0-100)' },
+                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                      incomeAccount: { type: 'string', description: 'Income account code' },
+                    },
+                  },
+                },
+              },
+              required: ['issueDate', 'lines'],
+            },
+          },
+          required: ['invoice'],
+        },
+      },
+      {
+        name: 'fiken_get_invoice',
+        description: 'Get a specific invoice by ID',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            invoiceId: {
+              type: 'number',
+              description: 'Invoice ID',
+            },
+          },
+          required: ['invoiceId'],
+        },
+      },
+      {
+        name: 'fiken_update_invoice',
+        description: 'Update an existing invoice (limited fields)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            invoiceId: {
+              type: 'number',
+              description: 'Invoice ID',
+            },
+            updates: {
+              type: 'object',
+              properties: {
+                dueDate: { type: 'string', description: 'New due date (YYYY-MM-DD)' },
+                sentManually: { type: 'boolean', description: 'Mark as sent manually' },
+              },
+            },
+          },
+          required: ['invoiceId', 'updates'],
+        },
+      },
+      {
+        name: 'fiken_send_invoice',
+        description: 'Send an invoice to customer',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            sendRequest: {
+              type: 'object',
+              properties: {
+                invoiceId: { type: 'number', description: 'Invoice ID to send' },
+                method: { type: 'string', enum: ['email', 'ehf', 'vipps', 'auto'], description: 'Send method' },
+                recipientName: { type: 'string', description: 'Recipient name (for email)' },
+                recipientEmail: { type: 'string', description: 'Recipient email (required for email method)' },
+                message: { type: 'string', description: 'Custom message' },
+                includeDocumentAttachments: { type: 'boolean', description: 'Include document attachments' },
+              },
+              required: ['invoiceId', 'method'],
+            },
+          },
+          required: ['sendRequest'],
+        },
+      },
+      {
+        name: 'fiken_get_invoice_drafts',
+        description: 'Get all invoice drafts for a company',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            params: {
+              type: 'object',
+              properties: {
+                page: { type: 'number', description: 'Page number (0-based)' },
+                pageSize: { type: 'number', description: 'Number of items per page (1-100)' },
+                orderReference: { type: 'string', description: 'Filter by order reference' },
+                uuid: { type: 'string', description: 'Filter by draft UUID' },
+              },
+            },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'fiken_create_invoice_draft',
+        description: 'Create a new invoice draft',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companySlug: {
+              type: 'string',
+              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+            },
+            draft: {
+              type: 'object',
+              properties: {
+                issueDate: { type: 'string', description: 'Invoice issue date (YYYY-MM-DD)' },
+                dueDate: { type: 'string', description: 'Invoice due date (YYYY-MM-DD)' },
+                contactId: { type: 'number', description: 'Customer contact ID' },
+                invoiceText: { type: 'string', description: 'Invoice description/comment' },
+                yourReference: { type: 'string', description: 'Your reference' },
+                ourReference: { type: 'string', description: 'Our reference' },
+                orderReference: { type: 'string', description: 'Order reference' },
+                currency: { type: 'string', description: '3-letter ISO currency code' },
+                lines: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      productId: { type: 'number', description: 'Product ID (if invoicing existing product)' },
+                      description: { type: 'string', description: 'Line item description' },
+                      count: { type: 'number', description: 'Quantity' },
+                      unitPrice: { type: 'number', description: 'Unit price in cents' },
+                      unitAmount: { type: 'number', description: 'Unit amount in cents' },
+                      discount: { type: 'number', description: 'Discount percentage (0-100)' },
+                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                      incomeAccount: { type: 'string', description: 'Income account code' },
+                    },
+                  },
+                },
+              },
+              required: ['lines'],
+            },
+          },
+          required: ['draft'],
+        },
+      },
     ] as Tool[];
   }
 
@@ -501,6 +718,21 @@ class FikenMCPServer {
             return await this.handleAddAttachmentToPurchaseDraft(args);
           case 'fiken_create_purchase_payment':
             return await this.handleCreatePurchasePayment(args);
+          // Invoice tools
+          case 'fiken_get_invoices':
+            return await this.handleGetInvoices(args);
+          case 'fiken_create_invoice':
+            return await this.handleCreateInvoice(args);
+          case 'fiken_get_invoice':
+            return await this.handleGetInvoice(args);
+          case 'fiken_update_invoice':
+            return await this.handleUpdateInvoice(args);
+          case 'fiken_send_invoice':
+            return await this.handleSendInvoice(args);
+          case 'fiken_get_invoice_drafts':
+            return await this.handleGetInvoiceDrafts(args);
+          case 'fiken_create_invoice_draft':
+            return await this.handleCreateInvoiceDraft(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -536,6 +768,11 @@ class FikenMCPServer {
           timeout: envConfig.timeout,
         });
         this.purchaseService = new FikenPurchaseService({
+          ...config,
+          enableLogging: true,
+          logLevel: process.env.LOG_LEVEL || 'info'
+        });
+        this.invoiceService = new FikenInvoiceService({
           ...config,
           enableLogging: true,
           logLevel: process.env.LOG_LEVEL || 'info'
@@ -586,6 +823,11 @@ class FikenMCPServer {
     
     const config = ConfigSchema.parse(mergedConfig);
     this.purchaseService = new FikenPurchaseService({
+      ...config,
+      enableLogging: true,
+      logLevel: process.env.LOG_LEVEL || 'info'
+    });
+    this.invoiceService = new FikenInvoiceService({
       ...config,
       enableLogging: true,
       logLevel: process.env.LOG_LEVEL || 'info'
@@ -863,6 +1105,162 @@ class FikenMCPServer {
     };
   }
 
+  // ========== INVOICE HANDLERS ==========
+
+  private async handleGetInvoices(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, params } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.getInvoices(finalCompanySlug, params);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleCreateInvoice(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, invoice } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.createInvoice(finalCompanySlug, invoice);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Invoice created successfully',
+        },
+      ],
+    };
+  }
+
+  private async handleGetInvoice(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, invoiceId } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.getInvoice(finalCompanySlug, invoiceId);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleUpdateInvoice(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, invoiceId, updates } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.updateInvoice(finalCompanySlug, invoiceId, updates);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Invoice updated successfully',
+        },
+      ],
+    };
+  }
+
+  private async handleSendInvoice(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, sendRequest } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.sendInvoice(finalCompanySlug, sendRequest);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Invoice sent successfully',
+        },
+      ],
+    };
+  }
+
+  private async handleGetInvoiceDrafts(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, params } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.getInvoiceDrafts(finalCompanySlug, params);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleCreateInvoiceDraft(args: any) {
+    this.ensureConfigured();
+    
+    const { companySlug, draft } = args;
+    const finalCompanySlug = companySlug || this.defaultCompanySlug;
+    
+    if (!finalCompanySlug) {
+      throw new Error('Company slug is required. Provide it as parameter or set FIKEN_COMPANY_SLUG environment variable.');
+    }
+    
+    const result = await this.invoiceService!.createInvoiceDraft(finalCompanySlug, draft);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Invoice draft created successfully',
+        },
+      ],
+    };
+  }
+
   private async handleMcpOverHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
       let body = '';
@@ -962,6 +1360,28 @@ class FikenMCPServer {
                   break;
                 case 'fiken_create_purchase_payment':
                   toolResult = await this.handleCreatePurchasePayment(args);
+                  break;
+                // Invoice tools
+                case 'fiken_get_invoices':
+                  toolResult = await this.handleGetInvoices(args);
+                  break;
+                case 'fiken_create_invoice':
+                  toolResult = await this.handleCreateInvoice(args);
+                  break;
+                case 'fiken_get_invoice':
+                  toolResult = await this.handleGetInvoice(args);
+                  break;
+                case 'fiken_update_invoice':
+                  toolResult = await this.handleUpdateInvoice(args);
+                  break;
+                case 'fiken_send_invoice':
+                  toolResult = await this.handleSendInvoice(args);
+                  break;
+                case 'fiken_get_invoice_drafts':
+                  toolResult = await this.handleGetInvoiceDrafts(args);
+                  break;
+                case 'fiken_create_invoice_draft':
+                  toolResult = await this.handleCreateInvoiceDraft(args);
                   break;
                 default:
                   throw new Error(`Unknown tool: ${name}`);
@@ -1082,7 +1502,7 @@ class FikenMCPServer {
   }
 
   private ensureConfigured(): void {
-    if (!this.purchaseService) {
+    if (!this.purchaseService || !this.invoiceService) {
       throw new Error('Fiken service not configured. Please run fiken_configure first.');
     }
   }
@@ -1330,6 +1750,28 @@ class FikenMCPServer {
             break;
           case 'fiken_create_purchase_payment':
             toolResult = await this.handleCreatePurchasePayment(args);
+            break;
+          // Invoice tools
+          case 'fiken_get_invoices':
+            toolResult = await this.handleGetInvoices(args);
+            break;
+          case 'fiken_create_invoice':
+            toolResult = await this.handleCreateInvoice(args);
+            break;
+          case 'fiken_get_invoice':
+            toolResult = await this.handleGetInvoice(args);
+            break;
+          case 'fiken_update_invoice':
+            toolResult = await this.handleUpdateInvoice(args);
+            break;
+          case 'fiken_send_invoice':
+            toolResult = await this.handleSendInvoice(args);
+            break;
+          case 'fiken_get_invoice_drafts':
+            toolResult = await this.handleGetInvoiceDrafts(args);
+            break;
+          case 'fiken_create_invoice_draft':
+            toolResult = await this.handleCreateInvoiceDraft(args);
             break;
           default:
             throw new Error(`Unknown tool: ${name}`);
