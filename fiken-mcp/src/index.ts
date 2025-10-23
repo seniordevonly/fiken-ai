@@ -483,13 +483,7 @@ class FikenMCPServer {
           case 'fiken_configure':
             return await this.handleConfigure(args);
           case 'fiken_get_purchases':
-            // Trace tool handler call
-            try {
-              const { writeFileSync } = await import('fs');
-              writeFileSync('/tmp/trace-tool-handler.txt', `fiken_get_purchases tool handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
-            } catch (e) {
-              // Ignore
-            }
+            console.error(`[FIKEN-MCP-DEBUG] STDIO tool handler called for fiken_get_purchases at ${new Date().toISOString()}`);
             return await this.handleGetPurchases(args);
           case 'fiken_create_purchase':
             return await this.handleCreatePurchase(args);
@@ -608,13 +602,9 @@ class FikenMCPServer {
   }
 
   private async handleGetPurchases(args: any) {
-    // Immediate trace logging to confirm method is called
-    try {
-      const { writeFileSync } = await import('fs');
-      writeFileSync('/tmp/trace-method-called.txt', `handleGetPurchases called at ${new Date().toISOString()}\n`, { flag: 'a' });
-    } catch (e) {
-      // Ignore
-    }
+    // Use stderr for logging since stdout is used for MCP protocol in STDIO mode
+    console.error(`[FIKEN-MCP-DEBUG] handleGetPurchases called at ${new Date().toISOString()}`);
+    console.error(`[FIKEN-MCP-DEBUG] Args:`, JSON.stringify(args));
     
     this.ensureConfigured();
     
@@ -629,50 +619,9 @@ class FikenMCPServer {
     
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
     
-    // Add some debug info about logging configuration
-    try {
-      const { existsSync, writeFileSync } = await import('fs');
-      
-      // Check if log directories exist and create a debug file
-      const debugInfo = {
-        timestamp: new Date().toISOString(),
-        logLevel: process.env.LOG_LEVEL,
-        logDir: process.env.LOG_DIR,
-        tmpExists: existsSync('/tmp'),
-        tmpLogsExists: existsSync('/tmp/logs'),
-        tmpFikenLogsExists: existsSync('/tmp/fiken-logs'),
-        companySlug: finalCompanySlug,
-        params,
-        queryParams
-      };
-      
-      // Try to write debug info to multiple locations
-      try {
-        writeFileSync('/tmp/debug-handleGetPurchases.json', JSON.stringify(debugInfo, null, 2));
-      } catch (e) {
-        // Ignore write errors
-      }
-    } catch (e) {
-      // Ignore any errors in debug code
-    }
-    
-    // Direct file logging since Winston logger might not be working
-    try {
-      const { writeFileSync } = await import('fs');
-      const logEntry = {
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        message: 'Get all purchaseses, queryParams',
-        data: { 
-          companySlug: finalCompanySlug, 
-          params, 
-          queryParams 
-        }
-      };
-      writeFileSync('/tmp/fiken-mcp-direct.log', JSON.stringify(logEntry, null, 2) + '\n', { flag: 'a' });
-    } catch (e) {
-      // Ignore file write errors
-    }
+    // Debug info logging to stderr (captured by Heroku)
+    console.error(`[FIKEN-MCP-DEBUG] Environment - LOG_LEVEL=${process.env.LOG_LEVEL}, LOG_DIR=${process.env.LOG_DIR}`);
+    console.error(`[FIKEN-MCP-DEBUG] Parameters - companySlug=${finalCompanySlug}, params=${JSON.stringify(params)}, queryParams=${JSON.stringify(queryParams)}`);
     
     logger.debug('handleGetPurchases called', { 
       companySlug: finalCompanySlug, 
@@ -1757,5 +1706,24 @@ grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT
   }
 }
 
-const server = new FikenMCPServer();
-server.run().catch(console.error);
+async function startServer() {
+  // Startup logging to verify server initialization
+  console.error(`[FIKEN-MCP-DEBUG] MCP Server starting at ${new Date().toISOString()}`);
+  console.error(`[FIKEN-MCP-DEBUG] PORT=${process.env.PORT}`);
+  console.error(`[FIKEN-MCP-DEBUG] Mode: ${process.env.PORT ? 'HTTP' : 'STDIO'}`);
+
+  const server = new FikenMCPServer();
+  console.error(`[FIKEN-MCP-DEBUG] MCP Server created at ${new Date().toISOString()}`);
+
+  try {
+    await server.run();
+    console.error(`[FIKEN-MCP-DEBUG] MCP Server started successfully`);
+  } catch (error) {
+    // Log any startup errors to stderr
+    const errorMsg = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
+    console.error(`[FIKEN-MCP-DEBUG] MCP Server error at ${new Date().toISOString()}: ${errorMsg}`);
+    throw error;
+  }
+}
+
+startServer().catch(console.error);
