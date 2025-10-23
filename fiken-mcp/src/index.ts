@@ -483,6 +483,13 @@ class FikenMCPServer {
           case 'fiken_configure':
             return await this.handleConfigure(args);
           case 'fiken_get_purchases':
+            // Trace tool handler call
+            try {
+              const { writeFileSync } = await import('fs');
+              writeFileSync('/tmp/trace-tool-handler.txt', `fiken_get_purchases tool handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
+            } catch (e) {
+              // Ignore
+            }
             return await this.handleGetPurchases(args);
           case 'fiken_create_purchase':
             return await this.handleCreatePurchase(args);
@@ -601,6 +608,14 @@ class FikenMCPServer {
   }
 
   private async handleGetPurchases(args: any) {
+    // Immediate trace logging to confirm method is called
+    try {
+      const { writeFileSync } = await import('fs');
+      writeFileSync('/tmp/trace-method-called.txt', `handleGetPurchases called at ${new Date().toISOString()}\n`, { flag: 'a' });
+    } catch (e) {
+      // Ignore
+    }
+    
     this.ensureConfigured();
     
     const { companySlug, params } = args;
@@ -639,6 +654,24 @@ class FikenMCPServer {
       }
     } catch (e) {
       // Ignore any errors in debug code
+    }
+    
+    // Direct file logging since Winston logger might not be working
+    try {
+      const { writeFileSync } = await import('fs');
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        level: 'info',
+        message: 'Get all purchaseses, queryParams',
+        data: { 
+          companySlug: finalCompanySlug, 
+          params, 
+          queryParams 
+        }
+      };
+      writeFileSync('/tmp/fiken-mcp-direct.log', JSON.stringify(logEntry, null, 2) + '\n', { flag: 'a' });
+    } catch (e) {
+      // Ignore file write errors
     }
     
     logger.debug('handleGetPurchases called', { 
