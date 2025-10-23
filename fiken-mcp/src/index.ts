@@ -981,6 +981,13 @@ class FikenMCPServer {
                   toolResult = await this.handleConfigure(args);
                   break;
                 case 'fiken_get_purchases':
+                  // Trace HTTP handler call
+                  try {
+                    const { writeFileSync } = await import('fs');
+                    writeFileSync('/tmp/trace-http-handler.txt', `fiken_get_purchases HTTP handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
+                  } catch (e) {
+                    // Ignore
+                  }
                   toolResult = await this.handleGetPurchases(args);
                   break;
                 case 'fiken_create_purchase':
@@ -1342,6 +1349,13 @@ class FikenMCPServer {
             toolResult = await this.handleConfigure(args);
             break;
           case 'fiken_get_purchases':
+            // Trace MCP handler call
+            try {
+              const { writeFileSync } = await import('fs');
+              writeFileSync('/tmp/trace-mcp-handler.txt', `fiken_get_purchases MCP handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
+            } catch (e) {
+              // Ignore
+            }
             toolResult = await this.handleGetPurchases(args);
             break;
           case 'fiken_create_purchase':
