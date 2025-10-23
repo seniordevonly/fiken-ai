@@ -42,8 +42,8 @@ export class FikenBaseService {
       this.logger = createLogger({
         level: config.logLevel || 'info',
         serviceName: 'fiken-api',
-        enableConsole: true,
-        enableFile: false // Can be enabled via environment or config
+        enableConsole: false, // Disable console to avoid MCP STDIO interference
+        enableFile: true // Use file logging by default
       });
     } else {
       // Create a no-op logger if logging is disabled
