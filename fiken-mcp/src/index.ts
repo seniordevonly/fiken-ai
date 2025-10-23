@@ -614,6 +614,32 @@ class FikenMCPServer {
     
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
     
+    // Add some debug info about logging configuration
+    const fs = require('fs');
+    try {
+      // Check if log directories exist and create a debug file
+      const debugInfo = {
+        timestamp: new Date().toISOString(),
+        logLevel: process.env.LOG_LEVEL,
+        logDir: process.env.LOG_DIR,
+        tmpExists: fs.existsSync('/tmp'),
+        tmpLogsExists: fs.existsSync('/tmp/logs'),
+        tmpFikenLogsExists: fs.existsSync('/tmp/fiken-logs'),
+        companySlug: finalCompanySlug,
+        params,
+        queryParams
+      };
+      
+      // Try to write debug info to multiple locations
+      try {
+        fs.writeFileSync('/tmp/debug-handleGetPurchases.json', JSON.stringify(debugInfo, null, 2));
+      } catch (e) {
+        // Ignore write errors
+      }
+    } catch (e) {
+      // Ignore any errors in debug code
+    }
+    
     logger.debug('handleGetPurchases called', { 
       companySlug: finalCompanySlug, 
       params, 
