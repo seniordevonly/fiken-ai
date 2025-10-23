@@ -31,9 +31,9 @@ class LoggerService {
   constructor(config: LoggerConfig = {}) {
     this.config = {
       level: config.level || process.env.LOG_LEVEL || 'info',
-      enableConsole: config.enableConsole !== false,
-      enableFile: config.enableFile || false,
-      logDir: config.logDir || './logs',
+      enableConsole: config.enableConsole ?? (process.env.ENABLE_CONSOLE_LOGGING === 'true'),
+      enableFile: config.enableFile ?? true, // Default to file logging
+      logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
       serviceName: config.serviceName || 'fiken-shared',
       ...config
     };
@@ -44,11 +44,11 @@ class LoggerService {
   private createLogger(): winston.Logger {
     const transports: winston.transport[] = [];
 
-    // Console transport with colored output (using stderr to avoid MCP protocol interference)
+    // Console transport with colored output (using stdout since Heroku redirects stderr to /dev/null)
     if (this.config.enableConsole) {
       transports.push(
         new winston.transports.Console({
-          stderrLevels: ['error', 'warn', 'info', 'debug'], // Force all levels to stderr
+          stderrLevels: ['error'], // Only errors to stderr, info/debug to stdout
           format: winston.format.combine(
             winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
             winston.format.errors({ stack: true }),
@@ -64,6 +64,9 @@ class LoggerService {
 
     // File transport for persistent logging
     if (this.config.enableFile) {
+      // Ensure log directory exists
+      this.ensureLogDirectory();
+      
       transports.push(
         new winston.transports.File({
           filename: `${this.config.logDir}/error.log`,
@@ -307,6 +310,21 @@ class LoggerService {
     }
     
     return sanitized;
+  }
+
+  /**
+   * Ensure log directory exists
+   */
+  private ensureLogDirectory(): void {
+    try {
+      const fs = require('fs');
+      if (!fs.existsSync(this.config.logDir)) {
+        fs.mkdirSync(this.config.logDir, { recursive: true });
+      }
+    } catch (error) {
+      // Silently fail if we can't create the directory
+      console.error('Failed to create log directory:', error);
+    }
   }
 
   /**

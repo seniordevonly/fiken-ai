@@ -601,7 +601,6 @@ class FikenMCPServer {
   }
 
   private async handleGetPurchases(args: any) {
-    console.error('DEBUG: handleGetPurchases method called');
     this.ensureConfigured();
     
     const { companySlug, params } = args;
@@ -615,11 +614,11 @@ class FikenMCPServer {
     
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
     
-    // Debug logging to stderr (should appear in Heroku logs)
-    console.error('DEBUG: handleGetPurchases called with params:', JSON.stringify(params));
-    console.error('DEBUG: parsed queryParams:', JSON.stringify(queryParams));
-    console.error('DEBUG: finalCompanySlug:', finalCompanySlug);
-    
+    logger.debug('handleGetPurchases called', { 
+      companySlug: finalCompanySlug, 
+      params, 
+      queryParams 
+    });
     logger.info('Get all purchaseses, queryParams', { queryParams });
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
     
