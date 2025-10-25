@@ -317,9 +317,12 @@ class LoggerService {
    */
   private ensureLogDirectory(): void {
     try {
-      // Simple approach: disable file logging for now to avoid ES module issues
-      // The main goal is to fix the MCP communication, logging is secondary
-      this.config.enableFile = false;
+      // Enable file logging when stderr is redirected (e.g., by Heroku inference)
+      // This allows debugging even when console output is suppressed
+      const fs = require('fs');
+      if (!fs.existsSync(this.config.logDir)) {
+        fs.mkdirSync(this.config.logDir, { recursive: true });
+      }
     } catch (error) {
       // Disable file logging on any error
       this.config.enableFile = false;

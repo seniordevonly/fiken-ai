@@ -871,6 +871,27 @@ class FikenMCPServer {
       queryParams 
     });
     logger.info('Get all purchaseses, queryParams', { queryParams });
+    
+    // Additional debug logging to file for Heroku inference debugging
+    try {
+      const fs = require('fs');
+      const debugInfo = {
+        timestamp: new Date().toISOString(),
+        method: 'handleGetPurchases',
+        companySlug: finalCompanySlug,
+        params,
+        queryParams,
+        environment: {
+          LOG_LEVEL: process.env.LOG_LEVEL,
+          LOG_DIR: process.env.LOG_DIR,
+          PORT: process.env.PORT
+        }
+      };
+      fs.appendFileSync('/tmp/fiken-mcp-debug.log', JSON.stringify(debugInfo) + '\n');
+    } catch (error) {
+      // Ignore file logging errors
+    }
+    
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
     
     return {
