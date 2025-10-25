@@ -673,7 +673,7 @@ class FikenMCPServer {
 
   private setupErrorHandling(): void {
     this.server.onerror = (error) => {
-      console.error('[MCP Error]', error);
+      logger.error('[MCP Error]', error);
     };
 
     process.on('SIGINT', async () => {
@@ -700,7 +700,7 @@ class FikenMCPServer {
           case 'fiken_configure':
             return await this.handleConfigure(args);
           case 'fiken_get_purchases':
-            console.error(`[FIKEN-MCP-DEBUG] STDIO tool handler called for fiken_get_purchases at ${new Date().toISOString()}`);
+            logger.debug(`STDIO tool handler called for fiken_get_purchases at ${new Date().toISOString()}`);
             return await this.handleGetPurchases(args);
           case 'fiken_create_purchase':
             return await this.handleCreatePurchase(args);
@@ -777,9 +777,9 @@ class FikenMCPServer {
           enableLogging: true,
           logLevel: process.env.LOG_LEVEL || 'info'
         });
-        console.error('Fiken service auto-configured from environment variables');
+        logger.info('Fiken service auto-configured from environment variables');
       } catch (error) {
-        console.error('Failed to auto-configure from environment:', error);
+        logger.error('Failed to auto-configure from environment:', error);
       }
     }
   }
@@ -844,9 +844,9 @@ class FikenMCPServer {
   }
 
   private async handleGetPurchases(args: any) {
-    // Use stderr for logging since stdout is used for MCP protocol in STDIO mode
-    console.error(`[FIKEN-MCP-DEBUG] handleGetPurchases called at ${new Date().toISOString()}`);
-    console.error(`[FIKEN-MCP-DEBUG] Args:`, JSON.stringify(args));
+    // Use logger for consistent stderr logging since stdout is used for MCP protocol in STDIO mode
+    logger.debug(`handleGetPurchases called at ${new Date().toISOString()}`);
+    logger.debug('handleGetPurchases args', args);
     
     this.ensureConfigured();
     
@@ -861,9 +861,9 @@ class FikenMCPServer {
     
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
     
-    // Debug info logging to stderr (captured by Heroku)
-    console.error(`[FIKEN-MCP-DEBUG] Environment - LOG_LEVEL=${process.env.LOG_LEVEL}, LOG_DIR=${process.env.LOG_DIR}`);
-    console.error(`[FIKEN-MCP-DEBUG] Parameters - companySlug=${finalCompanySlug}, params=${JSON.stringify(params)}, queryParams=${JSON.stringify(queryParams)}`);
+    // Debug info logging via logger (goes to stderr, captured by Heroku)
+    logger.debug('Environment variables', { LOG_LEVEL: process.env.LOG_LEVEL, LOG_DIR: process.env.LOG_DIR });
+    logger.debug('Request parameters', { companySlug: finalCompanySlug, params, queryParams });
     
     logger.debug('handleGetPurchases called', { 
       companySlug: finalCompanySlug, 
@@ -1271,7 +1271,7 @@ class FikenMCPServer {
       req.on('end', async () => {
         try {
           const mcpRequest = JSON.parse(body);
-          console.error('MCP Request:', JSON.stringify(mcpRequest, null, 2));
+          logger.debug('MCP Request received', mcpRequest);
           let mcpResponse;
           
           // Handle MCP requests
@@ -1419,7 +1419,7 @@ class FikenMCPServer {
             };
           }
           
-          console.error('MCP Response:', JSON.stringify(mcpResponse, null, 2));
+          logger.debug('MCP Response sent', mcpResponse);
           res.setHeader('Content-Type', 'application/json');
           res.writeHead(200);
           res.end(JSON.stringify(mcpResponse));
@@ -1929,7 +1929,7 @@ class FikenMCPServer {
     if (!process.env.PORT) {
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
-      console.error('Fiken MCP server running on stdio');
+      logger.info('Fiken MCP server running on stdio');
       return;
     }
 
@@ -2143,29 +2143,30 @@ grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT
     });
 
     httpServer.listen(port, () => {
-      console.error(`Fiken MCP server running on HTTP port ${port}`);
+      logger.info(`Fiken MCP server running on HTTP port ${port}`);
     });
   }
 }
 
 async function startServer() {
   // Startup logging to verify server initialization
-  console.error(`[FIKEN-MCP-DEBUG] MCP Server starting at ${new Date().toISOString()}`);
-  console.error(`[FIKEN-MCP-DEBUG] PORT=${process.env.PORT}`);
-  console.error(`[FIKEN-MCP-DEBUG] Mode: ${process.env.PORT ? 'HTTP' : 'STDIO'}`);
+  logger.info(`MCP Server starting at ${new Date().toISOString()}`);
+  logger.info('Environment', { PORT: process.env.PORT, Mode: process.env.PORT ? 'HTTP' : 'STDIO' });
 
   const server = new FikenMCPServer();
-  console.error(`[FIKEN-MCP-DEBUG] MCP Server created at ${new Date().toISOString()}`);
+  logger.info(`MCP Server created at ${new Date().toISOString()}`);
 
   try {
     await server.run();
-    console.error(`[FIKEN-MCP-DEBUG] MCP Server started successfully`);
+    logger.info('MCP Server started successfully');
   } catch (error) {
-    // Log any startup errors to stderr
-    const errorMsg = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
-    console.error(`[FIKEN-MCP-DEBUG] MCP Server error at ${new Date().toISOString()}: ${errorMsg}`);
+    // Log any startup errors via logger (goes to stderr)
+    logger.error('MCP Server startup error', error);
     throw error;
   }
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => {
+  logger.error('Failed to start server', error);
+  process.exit(1);
+});

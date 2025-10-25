@@ -31,7 +31,7 @@ class LoggerService {
   constructor(config: LoggerConfig = {}) {
     this.config = {
       level: config.level || process.env.LOG_LEVEL || 'info',
-      enableConsole: config.enableConsole ?? (process.env.ENABLE_CONSOLE_LOGGING === 'true'),
+      enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
       enableFile: config.enableFile ?? true, // Default to file logging
       logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
       serviceName: config.serviceName || 'fiken-shared',
@@ -44,11 +44,11 @@ class LoggerService {
   private createLogger(): winston.Logger {
     const transports: winston.transport[] = [];
 
-    // Console transport with colored output (using stdout since Heroku redirects stderr to /dev/null)
+    // Console transport - send ALL levels to stderr to keep stdout free for JSON-RPC
     if (this.config.enableConsole) {
       transports.push(
         new winston.transports.Console({
-          stderrLevels: ['error'], // Only errors to stderr, info/debug to stdout
+          stderrLevels: ['error', 'warn', 'info', 'debug'], // All levels to stderr for MCP compatibility
           format: winston.format.combine(
             winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
             winston.format.errors({ stack: true }),
