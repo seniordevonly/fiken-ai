@@ -197,7 +197,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             params: {
               type: 'object',
@@ -225,7 +225,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             purchase: {
               type: 'object',
@@ -265,7 +265,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             purchaseId: {
               type: 'number',
@@ -283,7 +283,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             purchaseId: {
               type: 'number',
@@ -305,7 +305,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             draft: {
               type: 'object',
@@ -368,7 +368,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             draftId: {
               type: 'number',
@@ -386,7 +386,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             draftId: {
               type: 'number',
@@ -404,7 +404,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             draftId: {
               type: 'number',
@@ -432,7 +432,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             purchaseId: {
               type: 'number',
@@ -461,7 +461,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             params: {
               type: 'object',
@@ -496,7 +496,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             invoice: {
               type: 'object',
@@ -540,7 +540,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             invoiceId: {
               type: 'number',
@@ -558,7 +558,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             invoiceId: {
               type: 'number',
@@ -583,7 +583,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             sendRequest: {
               type: 'object',
@@ -609,7 +609,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             params: {
               type: 'object',
@@ -632,7 +632,7 @@ class FikenMCPServer {
           properties: {
             companySlug: {
               type: 'string',
-              description: 'Company identifier slug (optional if FIKEN_COMPANY_SLUG env var is set)',
+              description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
             },
             draft: {
               type: 'object',
@@ -871,27 +871,6 @@ class FikenMCPServer {
       queryParams 
     });
     logger.info('Get all purchaseses, queryParams', { queryParams });
-    
-    // Additional debug logging to file for Heroku inference debugging
-    try {
-      const fs = require('fs');
-      const debugInfo = {
-        timestamp: new Date().toISOString(),
-        method: 'handleGetPurchases',
-        companySlug: finalCompanySlug,
-        params,
-        queryParams,
-        environment: {
-          LOG_LEVEL: process.env.LOG_LEVEL,
-          LOG_DIR: process.env.LOG_DIR,
-          PORT: process.env.PORT
-        }
-      };
-      fs.appendFileSync('/tmp/fiken-mcp-debug.log', JSON.stringify(debugInfo) + '\n');
-    } catch (error) {
-      // Ignore file logging errors
-    }
-    
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
     
     return {
@@ -1349,13 +1328,6 @@ class FikenMCPServer {
                   toolResult = await this.handleConfigure(args);
                   break;
                 case 'fiken_get_purchases':
-                  // Trace HTTP handler call
-                  try {
-                    const { writeFileSync } = await import('fs');
-                    writeFileSync('/tmp/trace-http-handler.txt', `fiken_get_purchases HTTP handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
-                  } catch (e) {
-                    // Ignore
-                  }
                   toolResult = await this.handleGetPurchases(args);
                   break;
                 case 'fiken_create_purchase':
@@ -1739,13 +1711,6 @@ class FikenMCPServer {
             toolResult = await this.handleConfigure(args);
             break;
           case 'fiken_get_purchases':
-            // Trace MCP handler call
-            try {
-              const { writeFileSync } = await import('fs');
-              writeFileSync('/tmp/trace-mcp-handler.txt', `fiken_get_purchases MCP handler called at ${new Date().toISOString()}\n`, { flag: 'a' });
-            } catch (e) {
-              // Ignore
-            }
             toolResult = await this.handleGetPurchases(args);
             break;
           case 'fiken_create_purchase':
