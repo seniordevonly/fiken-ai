@@ -239,7 +239,13 @@ Or use system environment variables by omitting the `env` section.
 ### Hermes Agent on Railway (HTTP)
 
 When `PORT` is set, the server runs in HTTP mode and serves MCP at `POST /mcp`. HTTP mode requires
-`MCP_AUTH_TOKEN` and refuses to start without it; every `/mcp` request must send `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+`MCP_AUTH_TOKEN` and refuses to start without it. `/mcp` accepts either:
+
+- `Authorization: Bearer <MCP_AUTH_TOKEN>` — a static token, used by Hermes;
+- an OAuth access token from `/oauth/token` (client credentials or authorization code flow), used by ChatGPT.
+  Set `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET`; without them the defaults in the source code are used.
+  Access tokens are signed with `MCP_AUTH_TOKEN`, so changing it invalidates issued tokens.
+
 `fiken_configure` and `fiken_add_attachment_to_purchase_draft` are not available over HTTP.
 
 1. In the Railway project that runs Hermes, add a service from this repo (Railway runs `npm install`, `npm run build`, `npm start`).

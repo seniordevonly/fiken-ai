@@ -1334,16 +1334,74 @@ class FikenMCPServer {
     }
   }
 
+  private generateAccessToken(): string {
+    // Generate a secure access token (JWT-like format)
+    const payload = {
+      iss: 'fiken-mcp-server',
+      aud: 'chatgpt',
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+      scope: 'fiken:read fiken:write'
+    };
+    
+    const tokenData = Buffer.from(JSON.stringify(payload)).toString('base64');
+    return `fiken_${tokenData}_${this.signToken(tokenData)}`;
+  }
+
+  // HMAC keyed by MCP_AUTH_TOKEN (always set in HTTP mode), so access tokens can't be forged
+  private signToken(tokenData: string): string {
+    return crypto.createHmac('sha256', process.env.MCP_AUTH_TOKEN!).update(`oauth-access-token:${tokenData}`).digest('hex');
+  }
+
+  private validateOAuthCredentials(clientId: string, clientSecret: string): boolean {
+    const validClientId = process.env.OAUTH_CLIENT_ID || 'fiken-mcp-client';
+    const validClientSecret = process.env.OAUTH_CLIENT_SECRET || 'fiken-mcp-secret-2024';
+    
+    return clientId === validClientId && clientSecret === validClientSecret;
+  }
+
+  private validateAccessToken(token: string): boolean {
+    if (!token || !token.startsWith('fiken_')) {
+      return false;
+    }
+    
+    try {
+      const parts = token.split('_');
+      if (parts.length !== 3) return false;
+
+      const expected = Buffer.from(this.signToken(parts[1]));
+      const actual = Buffer.from(parts[2]);
+      if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+        return false;
+      }
+      
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+      const now = Math.floor(Date.now() / 1000);
+      
+      // Check if token is expired
+      return payload.exp > now;
+    } catch (error) {
+      return false;
+    }
+  }
+
   private authenticateRequest(req: http.IncomingMessage): boolean {
     const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
     if (!match) {
       return false;
     }
 
-    // Compare digests so timingSafeEqual gets equal-length buffers
+    const token = match[1];
+
+    // Static token (e.g. Hermes). Compare digests so timingSafeEqual gets equal-length buffers
     const expected = crypto.createHash('sha256').update(process.env.MCP_AUTH_TOKEN!).digest();
-    const actual = crypto.createHash('sha256').update(match[1]).digest();
-    return crypto.timingSafeEqual(expected, actual);
+    const actual = crypto.createHash('sha256').update(token).digest();
+    if (crypto.timingSafeEqual(expected, actual)) {
+      return true;
+    }
+
+    // OAuth access token issued by /oauth/token (e.g. ChatGPT)
+    return this.validateAccessToken(token);
   }
 
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -1356,7 +1414,7 @@ class FikenMCPServer {
     res.setHeader('WWW-Authenticate', 'Bearer');
     this.sendJson(res, 401, {
       error: 'invalid_token',
-      error_description: 'Missing or invalid bearer token.'
+      error_description: 'The access token provided is expired, revoked, malformed, or invalid.'
     });
   }
 
@@ -1380,12 +1438,6 @@ class FikenMCPServer {
   }
 
   private async handleMcpOverHttpWithAuth(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // Authenticate before reading the body, so unauthenticated clients can't make us buffer it
-    if (!this.authenticateRequest(req)) {
-      this.sendAuthError(res);
-      return;
-    }
-
     const body = await this.readBody(req);
     if (body === null) {
       res.setHeader('Connection', 'close');
@@ -1406,6 +1458,51 @@ class FikenMCPServer {
       return;
     }
 
+    // Allow initialize method without authentication for OAuth discovery
+    if (mcpRequest.method === 'initialize') {
+      // Handle initialize directly without calling handleMcpOverHttp to avoid body re-reading
+      const mcpResponse = {
+        jsonrpc: '2.0',
+        id: mcpRequest.id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: {},
+            authentication: {
+              type: 'oauth2',
+              oauth2: {
+                issuer: `https://${req.headers.host}`,
+                authorizationEndpoint: `https://${req.headers.host}/oauth/authorize`,
+                tokenEndpoint: `https://${req.headers.host}/oauth/token`,
+                grantTypes: ['client_credentials'],
+                scopes: ['fiken:read', 'fiken:write'],
+                clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
+              }
+            }
+          },
+          serverInfo: {
+            name: 'fiken-mcp',
+            version: '0.1.0',
+            authentication: {
+              type: 'oauth2',
+              required: true
+            }
+          }
+        }
+      };
+      
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(200);
+      res.end(JSON.stringify(mcpResponse));
+      return;
+    }
+    
+    // All other methods require authentication
+    if (!this.authenticateRequest(req)) {
+      this.sendAuthError(res);
+      return;
+    }
+
     await this.processMcpRequest(mcpRequest, res);
   }
 
@@ -1421,11 +1518,26 @@ class FikenMCPServer {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: {
-            tools: {}
+            tools: {},
+            authentication: {
+              type: 'oauth2',
+              oauth2: {
+                issuer: `https://fiken-ai.regnmedoss.no`,
+                authorizationEndpoint: `https://fiken-ai.regnmedoss.no/oauth/authorize`,
+                tokenEndpoint: `https://fiken-ai.regnmedoss.no/oauth/token`,
+                grantTypes: ['client_credentials'],
+                scopes: ['fiken:read', 'fiken:write'],
+                clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
+              }
+            }
           },
           serverInfo: {
             name: 'fiken-mcp',
-            version: '0.1.0'
+            version: '0.1.0',
+            authentication: {
+              type: 'oauth2',
+              required: true
+            }
           }
         }
       };
@@ -1550,6 +1662,115 @@ class FikenMCPServer {
     res.end(JSON.stringify(mcpResponse));
   }
 
+  private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', () => {
+        try {
+          // Parse form data or JSON
+          let params: any;
+          const contentType = req.headers['content-type'] || '';
+          
+          if (contentType.includes('application/x-www-form-urlencoded')) {
+            params = new URLSearchParams(body);
+            params = Object.fromEntries(params.entries());
+          } else {
+            params = JSON.parse(body);
+          }
+          
+          const { grant_type, client_id, client_secret, code, redirect_uri } = params;
+          
+          if (grant_type === 'client_credentials') {
+            // Handle Client Credentials flow
+            if (!this.validateOAuthCredentials(client_id, client_secret)) {
+              res.setHeader('Content-Type', 'application/json');
+              res.writeHead(401);
+              res.end(JSON.stringify({
+                error: 'invalid_client',
+                error_description: 'Invalid client credentials'
+              }));
+              return;
+            }
+          } else if (grant_type === 'authorization_code') {
+            // Handle Authorization Code flow
+            if (!code) {
+              res.setHeader('Content-Type', 'application/json');
+              res.writeHead(400);
+              res.end(JSON.stringify({
+                error: 'invalid_request',
+                error_description: 'Authorization code is required'
+              }));
+              return;
+            }
+            
+            // Validate authorization code (simple validation for demo)
+            if (!code.startsWith('auth_')) {
+              res.setHeader('Content-Type', 'application/json');
+              res.writeHead(400);
+              res.end(JSON.stringify({
+                error: 'invalid_grant',
+                error_description: 'Invalid authorization code'
+              }));
+              return;
+            }
+            
+            // Validate client credentials for authorization code flow too
+            if (!this.validateOAuthCredentials(client_id, client_secret)) {
+              res.setHeader('Content-Type', 'application/json');
+              res.writeHead(401);
+              res.end(JSON.stringify({
+                error: 'invalid_client',
+                error_description: 'Invalid client credentials'
+              }));
+              return;
+            }
+          } else {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(400);
+            res.end(JSON.stringify({
+              error: 'unsupported_grant_type',
+              error_description: 'Supported grant types: client_credentials, authorization_code'
+            }));
+            return;
+          }
+          
+          // Generate access token for both flows
+          const accessToken = this.generateAccessToken();
+          
+          // Return token response
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            access_token: accessToken,
+            token_type: 'Bearer',
+            expires_in: 86400, // 24 hours
+            scope: 'fiken:read fiken:write'
+          }));
+          
+        } catch (error) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({
+            error: 'invalid_request',
+            error_description: 'Invalid request format'
+          }));
+        }
+      });
+      
+    } catch (error) {
+      res.setHeader('Content-Type', 'application/json');
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      }));
+    }
+  }
+
   async run(): Promise<void> {
     // Start MCP server on stdio for local development
     if (!process.env.PORT) {
@@ -1562,6 +1783,10 @@ class FikenMCPServer {
     // HTTP mode is reachable over the network, so it never runs without a bearer token
     if (!process.env.MCP_AUTH_TOKEN?.trim()) {
       throw new Error('MCP_AUTH_TOKEN must be set when running in HTTP mode (PORT is set)');
+    }
+
+    if (!process.env.OAUTH_CLIENT_ID || !process.env.OAUTH_CLIENT_SECRET) {
+      logger.warn('OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET not set: OAuth uses the default client credentials from the source code');
     }
 
     const port = parseInt(process.env.PORT, 10);
@@ -1584,11 +1809,175 @@ class FikenMCPServer {
             name: 'Fiken MCP Server',
             version: '0.1.0',
             status: 'running',
-            authentication: 'bearer',
-            mcp_endpoint: '/mcp'
+            authentication: 'oauth2',
+            token_endpoint: '/oauth/token',
+            oauth_discovery: '/.well-known/oauth-authorization-server',
+            tools: this.getHttpToolsList().map(tool => tool.name),
+            protocols: ['mcp', 'http']
           });
         } else if (req.method === 'GET' && parsedUrl.pathname === '/health') {
           this.sendJson(res, 200, { status: 'healthy' });
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-authorization-server') {
+          // OAuth 2.0 Discovery Endpoint
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code']
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/openid-configuration') {
+          // OpenID Connect Discovery Endpoint (what ChatGPT actually looks for)
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code'],
+            subject_types_supported: ['public']
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-protected-resource') {
+          // OAuth 2.0 Protected Resource Discovery Endpoint (what ChatGPT is looking for)
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            resource: `https://${req.headers.host}/mcp`,
+            authorization_servers: [`https://${req.headers.host}`],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            bearer_methods_supported: ['header'],
+            resource_documentation: `https://${req.headers.host}/`,
+            resource_registration: `https://${req.headers.host}/oauth/token`
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-protected-resource/mcp') {
+          // OAuth 2.0 Protected Resource Discovery for MCP path
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            resource: `https://${req.headers.host}/mcp`,
+            authorization_servers: [`https://${req.headers.host}`],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            bearer_methods_supported: ['header'],
+            resource_documentation: `https://${req.headers.host}/`,
+            resource_registration: `https://${req.headers.host}/oauth/token`
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/oauth/authorize') {
+          // OAuth 2.0 Authorization Endpoint - handle authorization code flow
+          const query = parsedUrl.query;
+          const clientId = query?.client_id as string;
+          const redirectUri = query?.redirect_uri as string;
+          const state = query?.state as string;
+          const responseType = query?.response_type as string;
+        
+          if (responseType === 'code' && clientId && redirectUri) {
+            // Generate authorization code
+            const authCode = `auth_${Buffer.from(JSON.stringify({clientId, timestamp: Date.now()})).toString('base64')}`;
+          
+            // Redirect back to ChatGPT with authorization code
+            let redirectUrl: URL;
+            try {
+              redirectUrl = new URL(redirectUri);
+            } catch {
+              this.sendJson(res, 400, { error: 'invalid_request', error_description: 'Invalid redirect_uri' });
+              return;
+            }
+            redirectUrl.searchParams.set('code', authCode);
+            if (state) redirectUrl.searchParams.set('state', state);
+          
+            res.writeHead(302, { 'Location': redirectUrl.toString() });
+            res.end();
+          } else {
+            // Show helpful page for manual testing
+            res.setHeader('Content-Type', 'text/html');
+            res.writeHead(200);
+            res.end(`
+              <!DOCTYPE html>
+              <html>
+              <head><title>OAuth Authorization</title></head>
+              <body>
+                <h1>OAuth 2.0 Authorization</h1>
+                <p>This server supports both <strong>Authorization Code</strong> and <strong>Client Credentials</strong> flows.</p>
+                <h2>For Authorization Code Flow:</h2>
+                <p>Use: <code>GET /oauth/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI</code></p>
+                <h2>For Client Credentials Flow:</h2>
+                <pre>POST https://${req.headers.host}/oauth/token
+  Content-Type: application/x-www-form-urlencoded
+
+  grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET</pre>
+                <p><a href="/.well-known/openid-configuration">View OpenID Configuration</a></p>
+              </body>
+              </html>
+            `);
+          }
+        } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/authorize') {
+          // Handle POST to authorization endpoint - redirect to client credentials
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({
+            error: 'unsupported_grant_type',
+            error_description: 'This server only supports client_credentials grant type. Use POST /oauth/token with grant_type=client_credentials.'
+          }));
+        } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
+          // OAuth 2.0 Token Endpoint
+          await this.handleOAuthToken(req, res);
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-authorization-server/mcp') {
+          // OAuth 2.0 Discovery Endpoint with MCP suffix (what ChatGPT looks for)
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code']
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/openid-configuration/mcp') {
+          // OpenID Connect Discovery with MCP suffix (what ChatGPT looks for)
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code'],
+            subject_types_supported: ['public']
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/oauth-authorization-server') {
+          // OAuth 2.0 Discovery Endpoint under MCP path
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code']
+          }));
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/openid-configuration') {
+          // OpenID Connect Discovery Endpoint under MCP path (what ChatGPT looks for)
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            issuer: `https://${req.headers.host}`,
+            token_endpoint: `https://${req.headers.host}/oauth/token`,
+            grant_types_supported: ['client_credentials', 'authorization_code'],
+            token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+            scopes_supported: ['fiken:read', 'fiken:write'],
+            response_types_supported: ['token', 'code'],
+            subject_types_supported: ['public']
+          }));
         } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
           await this.handleMcpOverHttpWithAuth(req, res);
         } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
