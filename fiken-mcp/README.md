@@ -243,7 +243,8 @@ When `PORT` is set, the server runs in HTTP mode and serves MCP at `POST /mcp`. 
 
 - `Authorization: Bearer <MCP_AUTH_TOKEN>` — a static token, used by Hermes;
 - an OAuth access token from `/oauth/token` (client credentials or authorization code flow), used by ChatGPT.
-  Set `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET`; without them the defaults in the source code are used.
+  OAuth is enabled only when `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are set (enter the same values in the
+  ChatGPT connector); there are no default credentials.
   Access tokens are signed with `MCP_AUTH_TOKEN`, so changing it invalidates issued tokens.
 
 `fiken_configure` and `fiken_add_attachment_to_purchase_draft` are not available over HTTP.

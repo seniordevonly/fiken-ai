@@ -1353,11 +1353,26 @@ class FikenMCPServer {
     return crypto.createHmac('sha256', process.env.MCP_AUTH_TOKEN!).update(`oauth-access-token:${tokenData}`).digest('hex');
   }
 
+  // Compare digests so timingSafeEqual gets equal-length buffers
+  private safeEqual(a: string, b: string): boolean {
+    const digestA = crypto.createHash('sha256').update(a).digest();
+    const digestB = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(digestA, digestB);
+  }
+
+  // OAuth is only enabled when both credentials are configured; there are no defaults
+  private isOAuthEnabled(): boolean {
+    return Boolean(process.env.OAUTH_CLIENT_ID?.trim() && process.env.OAUTH_CLIENT_SECRET?.trim());
+  }
+
   private validateOAuthCredentials(clientId: string, clientSecret: string): boolean {
-    const validClientId = process.env.OAUTH_CLIENT_ID || 'fiken-mcp-client';
-    const validClientSecret = process.env.OAUTH_CLIENT_SECRET || 'fiken-mcp-secret-2024';
-    
-    return clientId === validClientId && clientSecret === validClientSecret;
+    if (!this.isOAuthEnabled() || typeof clientId !== 'string' || typeof clientSecret !== 'string') {
+      return false;
+    }
+
+    const idMatches = this.safeEqual(clientId, process.env.OAUTH_CLIENT_ID!);
+    const secretMatches = this.safeEqual(clientSecret, process.env.OAUTH_CLIENT_SECRET!);
+    return idMatches && secretMatches;
   }
 
   private validateAccessToken(token: string): boolean {
@@ -1393,10 +1408,8 @@ class FikenMCPServer {
 
     const token = match[1];
 
-    // Static token (e.g. Hermes). Compare digests so timingSafeEqual gets equal-length buffers
-    const expected = crypto.createHash('sha256').update(process.env.MCP_AUTH_TOKEN!).digest();
-    const actual = crypto.createHash('sha256').update(token).digest();
-    if (crypto.timingSafeEqual(expected, actual)) {
+    // Static token (e.g. Hermes)
+    if (this.safeEqual(token, process.env.MCP_AUTH_TOKEN!)) {
       return true;
     }
 
@@ -1785,8 +1798,8 @@ class FikenMCPServer {
       throw new Error('MCP_AUTH_TOKEN must be set when running in HTTP mode (PORT is set)');
     }
 
-    if (!process.env.OAUTH_CLIENT_ID || !process.env.OAUTH_CLIENT_SECRET) {
-      logger.warn('OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET not set: OAuth uses the default client credentials from the source code');
+    if (!this.isOAuthEnabled()) {
+      logger.info('OAuth disabled (OAUTH_CLIENT_ID/OAUTH_CLIENT_SECRET not set); only MCP_AUTH_TOKEN is accepted');
     }
 
     const port = parseInt(process.env.PORT, 10);
