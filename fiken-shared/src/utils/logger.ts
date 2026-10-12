@@ -4,6 +4,9 @@
 
 import winston from 'winston';
 
+// Cap each log file at 10 MB and keep 3 rotated files, so long-running servers don't fill the disk
+const LOG_FILE_ROTATION = { maxsize: 10 * 1024 * 1024, maxFiles: 3 };
+
 export interface LoggerConfig {
   level?: string;
   enableConsole?: boolean;
@@ -71,6 +74,7 @@ class LoggerService {
         new winston.transports.File({
           filename: `${this.config.logDir}/error.log`,
           level: 'error',
+          ...LOG_FILE_ROTATION,
           format: winston.format.combine(
             winston.format.timestamp(),
             winston.format.errors({ stack: true }),
@@ -79,6 +83,7 @@ class LoggerService {
         }),
         new winston.transports.File({
           filename: `${this.config.logDir}/combined.log`,
+          ...LOG_FILE_ROTATION,
           format: winston.format.combine(
             winston.format.timestamp(),
             winston.format.errors({ stack: true }),
@@ -94,10 +99,10 @@ class LoggerService {
       transports,
       // Handle uncaught exceptions and rejections
       exceptionHandlers: this.config.enableFile ? [
-        new winston.transports.File({ filename: `${this.config.logDir}/exceptions.log` })
+        new winston.transports.File({ filename: `${this.config.logDir}/exceptions.log`, ...LOG_FILE_ROTATION })
       ] : [],
       rejectionHandlers: this.config.enableFile ? [
-        new winston.transports.File({ filename: `${this.config.logDir}/rejections.log` })
+        new winston.transports.File({ filename: `${this.config.logDir}/rejections.log`, ...LOG_FILE_ROTATION })
       ] : []
     });
   }

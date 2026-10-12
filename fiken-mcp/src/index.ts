@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { FikenPurchaseService, FikenInvoiceService, VatType, logger } from 'fiken-shared';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import url from 'node:url';
@@ -31,6 +32,12 @@ const VatTypeEnum = z.enum([
   'HIGH_PURCHASE_OF_EMISSIONSTRADING_OR_GOLD_NONDEDUCTIBLE'
 ]);
 
+// Tools that are unsafe on a shared remote server: fiken_configure lets any caller
+// repoint the API client (and its token), and the attachment tool reads paths from the server's disk
+const HTTP_DISABLED_TOOLS = new Set(['fiken_configure', 'fiken_add_attachment_to_purchase_draft']);
+
+const MAX_HTTP_BODY_BYTES = 1024 * 1024;
+
 // Environment variable configuration
 const getEnvConfig = () => ({
   apiToken: process.env.FIKEN_API_TOKEN,
@@ -42,7 +49,7 @@ const getEnvConfig = () => ({
 // Validation schemas
 const ConfigSchema = z.object({
   apiToken: z.string().min(1, 'API token is required'),
-  baseUrl: z.string().url().optional(),
+  baseUrl: z.string().url().startsWith('https://', 'Base URL must use https').optional(),
   timeout: z.number().positive().optional(),
 });
 
@@ -156,6 +163,10 @@ class FikenMCPServer {
     this.tools = [];
   }
 
+  private getHttpToolsList(): Tool[] {
+    return this.getToolsList().filter(tool => !HTTP_DISABLED_TOOLS.has(tool.name));
+  }
+
   private getToolsList(): Tool[] {
     return [
       {
@@ -236,6 +247,11 @@ class FikenMCPServer {
                 identifier: { type: 'string', description: 'Invoice/sale number or similar' },
                 dueDate: { type: 'string', description: 'Due date (YYYY-MM-DD)' },
                 supplierId: { type: 'number', description: 'Supplier contact ID' },
+                paymentAccount: { type: 'string', description: 'Payment account code (e.g. 1920:10001), required for cash_purchase' },
+                paymentDate: { type: 'string', description: 'Payment date (YYYY-MM-DD)' },
+                paid: { type: 'boolean', description: 'Whether the purchase is paid (defaults to false)' },
+                kid: { type: 'string', description: 'KID payment reference' },
+                projectId: { type: 'number', description: 'Project ID' },
                 lines: {
                   type: 'array',
                   items: {
@@ -245,7 +261,7 @@ class FikenMCPServer {
                       netPrice: { type: 'number', description: 'Net price in cents' },
                       vat: { type: 'number', description: 'VAT amount in cents' },
                       account: { type: 'string', description: 'Account code' },
-                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                      vatType: { type: 'string', enum: VatTypeEnum.options, description: 'VAT type' },
                     },
                     required: ['description', 'vatType'],
                   },
@@ -342,7 +358,7 @@ class FikenMCPServer {
                     type: 'object',
                     properties: {
                       text: { type: 'string', description: 'Line text (required, max 200 chars)' },
-                      vatType: { type: 'string', description: 'VAT type (e.g., HIGH, MEDIUM, LOW)' },
+                      vatType: { type: 'string', enum: VatTypeEnum.options, description: 'VAT type' },
                       incomeAccount: { type: 'string', description: 'Income account (required)' },
                       net: { type: 'number', description: 'Net amount in cents (non-negative)' },
                       gross: { type: 'number', description: 'Gross amount in cents (non-negative)' },
@@ -1038,10 +1054,10 @@ class FikenMCPServer {
     }
     
     CompanySlugSchema.parse(finalCompanySlug);
-    logger.info('Creating purchase draft', { draft });
+    logger.debug('Creating purchase draft', { draft });
 
     const validatedDraft = DraftRequestSchema.parse(draft);
-    logger.info('Creating purchase draft, validatedDraft', { validatedDraft });
+    logger.debug('Creating purchase draft, validatedDraft', { validatedDraft });
     const result = await this.purchaseService!.createPurchaseDraft(finalCompanySlug, validatedDraft);
     
     return {
@@ -1261,188 +1277,6 @@ class FikenMCPServer {
     };
   }
 
-  private async handleMcpOverHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    try {
-      let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-      
-      req.on('end', async () => {
-        try {
-          const mcpRequest = JSON.parse(body);
-          logger.debug('MCP Request received', mcpRequest);
-          let mcpResponse;
-          
-          // Handle MCP requests
-          if (mcpRequest.method === 'initialize') {
-            // Handle MCP initialization
-            mcpResponse = {
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              result: {
-                protocolVersion: '2024-11-05',
-                capabilities: {
-                  tools: {},
-                  authentication: {
-                    oauth2: {
-                      authorizationUrl: `https://${req.headers.host}/oauth/authorize`,
-                      tokenUrl: `https://${req.headers.host}/oauth/token`,
-                      scopes: ['fiken:read', 'fiken:write']
-                    }
-                  }
-                },
-                serverInfo: {
-                  name: 'fiken-mcp',
-                  version: '0.1.0',
-                  authentication: 'oauth2'
-                }
-              }
-            };
-          } else if (mcpRequest.method === 'notifications/initialized') {
-            // Handle initialized notification (no response needed)
-            res.setHeader('Content-Type', 'application/json');
-            res.writeHead(200);
-            res.end();
-            return;
-          } else if (mcpRequest.method === 'tools/list') {
-            // Return the same detailed tools list as STDIO mode
-            mcpResponse = {
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              result: {
-                tools: this.getToolsList()
-              }
-            };
-          } else if (mcpRequest.method === 'tools/call') {
-            // Handle tool calls - execute the actual tool
-            try {
-              const { name, arguments: args } = mcpRequest.params;
-              let toolResult;
-
-              switch (name) {
-                case 'fiken_status':
-                  toolResult = await this.handleStatus(args);
-                  break;
-                case 'fiken_configure':
-                  toolResult = await this.handleConfigure(args);
-                  break;
-                case 'fiken_get_purchases':
-                  toolResult = await this.handleGetPurchases(args);
-                  break;
-                case 'fiken_create_purchase':
-                  toolResult = await this.handleCreatePurchase(args);
-                  break;
-                case 'fiken_get_purchase':
-                  toolResult = await this.handleGetPurchase(args);
-                  break;
-                case 'fiken_delete_purchase':
-                  toolResult = await this.handleDeletePurchase(args);
-                  break;
-                case 'fiken_create_purchase_draft':
-                  toolResult = await this.handleCreatePurchaseDraft(args);
-                  break;
-                case 'fiken_get_purchase_draft':
-                  toolResult = await this.handleGetPurchaseDraft(args);
-                  break;
-                case 'fiken_get_purchase_draft_attachments':
-                  toolResult = await this.handleGetPurchaseDraftAttachments(args);
-                  break;
-                case 'fiken_add_attachment_to_purchase_draft':
-                  toolResult = await this.handleAddAttachmentToPurchaseDraft(args);
-                  break;
-                case 'fiken_create_purchase_payment':
-                  toolResult = await this.handleCreatePurchasePayment(args);
-                  break;
-                // Invoice tools
-                case 'fiken_get_invoices':
-                  toolResult = await this.handleGetInvoices(args);
-                  break;
-                case 'fiken_create_invoice':
-                  toolResult = await this.handleCreateInvoice(args);
-                  break;
-                case 'fiken_get_invoice':
-                  toolResult = await this.handleGetInvoice(args);
-                  break;
-                case 'fiken_update_invoice':
-                  toolResult = await this.handleUpdateInvoice(args);
-                  break;
-                case 'fiken_send_invoice':
-                  toolResult = await this.handleSendInvoice(args);
-                  break;
-                case 'fiken_get_invoice_drafts':
-                  toolResult = await this.handleGetInvoiceDrafts(args);
-                  break;
-                case 'fiken_create_invoice_draft':
-                  toolResult = await this.handleCreateInvoiceDraft(args);
-                  break;
-                default:
-                  throw new Error(`Unknown tool: ${name}`);
-              }
-
-              mcpResponse = {
-                jsonrpc: '2.0',
-                id: mcpRequest.id,
-                result: toolResult
-              };
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-              mcpResponse = {
-                jsonrpc: '2.0',
-                id: mcpRequest.id,
-                result: {
-                  content: [
-                    {
-                      type: 'text',
-                      text: `Error: ${errorMessage}`,
-                    },
-                  ],
-                  isError: true,
-                }
-              };
-            }
-          } else {
-            mcpResponse = {
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              error: {
-                code: -32601,
-                message: 'Method not found'
-              }
-            };
-          }
-          
-          logger.debug('MCP Response sent', mcpResponse);
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(200);
-          res.end(JSON.stringify(mcpResponse));
-        } catch (error) {
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(400);
-          res.end(JSON.stringify({
-            jsonrpc: '2.0',
-            id: null,
-            error: {
-              code: -32700,
-              message: 'Parse error'
-            }
-          }));
-        }
-      });
-    } catch (error) {
-      res.setHeader('Content-Type', 'application/json');
-      res.writeHead(500);
-      res.end(JSON.stringify({
-        jsonrpc: '2.0',
-        id: null,
-        error: {
-          code: -32603,
-          message: 'Internal error'
-        }
-      }));
-    }
-  }
-
   private getOpenApiSpec() {
     return {
       openapi: '3.0.0',
@@ -1500,151 +1334,79 @@ class FikenMCPServer {
     }
   }
 
-  private generateAccessToken(): string {
-    // Generate a secure access token (JWT-like format)
-    const payload = {
-      iss: 'fiken-mcp-server',
-      aud: 'chatgpt',
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
-      scope: 'fiken:read fiken:write'
-    };
-    
-    // Simple token format (in production, use proper JWT)
-    const tokenData = Buffer.from(JSON.stringify(payload)).toString('base64');
-    return `fiken_${tokenData}_${Date.now()}`;
-  }
-
-  private validateOAuthCredentials(clientId: string, clientSecret: string): boolean {
-    const validClientId = process.env.OAUTH_CLIENT_ID || 'fiken-mcp-client';
-    const validClientSecret = process.env.OAUTH_CLIENT_SECRET || 'fiken-mcp-secret-2024';
-    
-    return clientId === validClientId && clientSecret === validClientSecret;
-  }
-
-  private validateAccessToken(token: string): boolean {
-    if (!token || !token.startsWith('fiken_')) {
-      return false;
-    }
-    
-    try {
-      const parts = token.split('_');
-      if (parts.length !== 3) return false;
-      
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-      const now = Math.floor(Date.now() / 1000);
-      
-      // Check if token is expired
-      return payload.exp > now;
-    } catch (error) {
-      return false;
-    }
-  }
-
   private authenticateRequest(req: http.IncomingMessage): boolean {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+    if (!match) {
       return false;
     }
-    
-    const token = authHeader.substring(7);
-    return this.validateAccessToken(token);
+
+    // Compare digests so timingSafeEqual gets equal-length buffers
+    const expected = crypto.createHash('sha256').update(process.env.MCP_AUTH_TOKEN!).digest();
+    const actual = crypto.createHash('sha256').update(match[1]).digest();
+    return crypto.timingSafeEqual(expected, actual);
+  }
+
+  private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(status);
+    res.end(JSON.stringify(body));
   }
 
   private sendAuthError(res: http.ServerResponse): void {
-    res.setHeader('Content-Type', 'application/json');
-    res.writeHead(401);
-    res.end(JSON.stringify({
+    res.setHeader('WWW-Authenticate', 'Bearer');
+    this.sendJson(res, 401, {
       error: 'invalid_token',
-      error_description: 'The access token provided is expired, revoked, malformed, or invalid.'
-    }));
+      error_description: 'Missing or invalid bearer token.'
+    });
+  }
+
+  private readBody(req: http.IncomingMessage): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_HTTP_BODY_BYTES) {
+          // Stop buffering; the caller answers 413 and closes the connection
+          chunks.length = 0;
+          resolve(null);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => resolve(size > MAX_HTTP_BODY_BYTES ? null : Buffer.concat(chunks).toString('utf8')));
+      req.on('error', reject);
+    });
   }
 
   private async handleMcpOverHttpWithAuth(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    try {
-      let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-      
-      req.on('end', async () => {
-        try {
-          const mcpRequest = JSON.parse(body);
-          
-          // Allow initialize method without authentication for OAuth discovery
-          if (mcpRequest.method === 'initialize') {
-            // Handle initialize directly without calling handleMcpOverHttp to avoid body re-reading
-            const mcpResponse = {
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              result: {
-                protocolVersion: '2024-11-05',
-                capabilities: {
-                  tools: {},
-                  authentication: {
-                    type: 'oauth2',
-                    oauth2: {
-                      issuer: `https://${req.headers.host}`,
-                      authorizationEndpoint: `https://${req.headers.host}/oauth/authorize`,
-                      tokenEndpoint: `https://${req.headers.host}/oauth/token`,
-                      grantTypes: ['client_credentials'],
-                      scopes: ['fiken:read', 'fiken:write'],
-                      clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
-                    }
-                  }
-                },
-                serverInfo: {
-                  name: 'fiken-mcp',
-                  version: '0.1.0',
-                  authentication: {
-                    type: 'oauth2',
-                    required: true
-                  }
-                }
-              }
-            };
-            
-            res.setHeader('Content-Type', 'application/json');
-            res.writeHead(200);
-            res.end(JSON.stringify(mcpResponse));
-            return;
-          }
-          
-          // All other methods require authentication
-          if (!this.authenticateRequest(req)) {
-            this.sendAuthError(res);
-            return;
-          }
-          
-          // Handle authenticated MCP request by processing the parsed request
-          await this.processMcpRequest(mcpRequest, res);
-          
-        } catch (error) {
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(400);
-          res.end(JSON.stringify({
-            jsonrpc: '2.0',
-            id: null,
-            error: {
-              code: -32700,
-              message: 'Parse error'
-            }
-          }));
-        }
-      });
-      
-    } catch (error) {
-      res.setHeader('Content-Type', 'application/json');
-      res.writeHead(500);
-      res.end(JSON.stringify({
-        jsonrpc: '2.0',
-        id: null,
-        error: {
-          code: -32603,
-          message: 'Internal error'
-        }
-      }));
+    // Authenticate before reading the body, so unauthenticated clients can't make us buffer it
+    if (!this.authenticateRequest(req)) {
+      this.sendAuthError(res);
+      return;
     }
+
+    const body = await this.readBody(req);
+    if (body === null) {
+      res.setHeader('Connection', 'close');
+      this.sendJson(res, 413, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Request body too large' } });
+      return;
+    }
+
+    let mcpRequest;
+    try {
+      mcpRequest = JSON.parse(body);
+    } catch {
+      this.sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+      return;
+    }
+
+    if (!mcpRequest || typeof mcpRequest !== 'object' || Array.isArray(mcpRequest)) {
+      this.sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request (batches are not supported)' } });
+      return;
+    }
+
+    await this.processMcpRequest(mcpRequest, res);
   }
 
   private async processMcpRequest(mcpRequest: any, res: http.ServerResponse): Promise<void> {
@@ -1659,42 +1421,31 @@ class FikenMCPServer {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: {
-            tools: {},
-            authentication: {
-              type: 'oauth2',
-              oauth2: {
-                issuer: `https://fiken-ai.regnmedoss.no`,
-                authorizationEndpoint: `https://fiken-ai.regnmedoss.no/oauth/authorize`,
-                tokenEndpoint: `https://fiken-ai.regnmedoss.no/oauth/token`,
-                grantTypes: ['client_credentials'],
-                scopes: ['fiken:read', 'fiken:write'],
-                clientAuthenticationMethods: ['client_secret_post', 'client_secret_basic']
-              }
-            }
+            tools: {}
           },
           serverInfo: {
             name: 'fiken-mcp',
-            version: '0.1.0',
-            authentication: {
-              type: 'oauth2',
-              required: true
-            }
+            version: '0.1.0'
           }
         }
       };
-    } else if (mcpRequest.method === 'notifications/initialized') {
-      // Handle initialized notification (no response needed)
-      res.setHeader('Content-Type', 'application/json');
-      res.writeHead(200);
+    } else if (mcpRequest.id === undefined) {
+      // Notifications (e.g. notifications/initialized) get 202 Accepted with no body
+      res.writeHead(202);
       res.end();
       return;
+    } else if (mcpRequest.method === 'ping') {
+      mcpResponse = {
+        jsonrpc: '2.0',
+        id: mcpRequest.id,
+        result: {}
+      };
     } else if (mcpRequest.method === 'tools/list') {
-      // Return the same detailed tools list as STDIO mode
       mcpResponse = {
         jsonrpc: '2.0',
         id: mcpRequest.id,
         result: {
-          tools: this.getToolsList()
+          tools: this.getHttpToolsList()
         }
       };
     } else if (mcpRequest.method === 'tools/call') {
@@ -1703,12 +1454,13 @@ class FikenMCPServer {
         const { name, arguments: args } = mcpRequest.params;
         let toolResult;
 
+        if (HTTP_DISABLED_TOOLS.has(name)) {
+          throw new Error(`Tool ${name} is not available over HTTP`);
+        }
+
         switch (name) {
           case 'fiken_status':
             toolResult = await this.handleStatus(args);
-            break;
-          case 'fiken_configure':
-            toolResult = await this.handleConfigure(args);
             break;
           case 'fiken_get_purchases':
             toolResult = await this.handleGetPurchases(args);
@@ -1730,9 +1482,6 @@ class FikenMCPServer {
             break;
           case 'fiken_get_purchase_draft_attachments':
             toolResult = await this.handleGetPurchaseDraftAttachments(args);
-            break;
-          case 'fiken_add_attachment_to_purchase_draft':
-            toolResult = await this.handleAddAttachmentToPurchaseDraft(args);
             break;
           case 'fiken_create_purchase_payment':
             toolResult = await this.handleCreatePurchasePayment(args);
@@ -1801,115 +1550,6 @@ class FikenMCPServer {
     res.end(JSON.stringify(mcpResponse));
   }
 
-  private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    try {
-      let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-      
-      req.on('end', () => {
-        try {
-          // Parse form data or JSON
-          let params: any;
-          const contentType = req.headers['content-type'] || '';
-          
-          if (contentType.includes('application/x-www-form-urlencoded')) {
-            params = new URLSearchParams(body);
-            params = Object.fromEntries(params.entries());
-          } else {
-            params = JSON.parse(body);
-          }
-          
-          const { grant_type, client_id, client_secret, code, redirect_uri } = params;
-          
-          if (grant_type === 'client_credentials') {
-            // Handle Client Credentials flow
-            if (!this.validateOAuthCredentials(client_id, client_secret)) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(401);
-              res.end(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client credentials'
-              }));
-              return;
-            }
-          } else if (grant_type === 'authorization_code') {
-            // Handle Authorization Code flow
-            if (!code) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(400);
-              res.end(JSON.stringify({
-                error: 'invalid_request',
-                error_description: 'Authorization code is required'
-              }));
-              return;
-            }
-            
-            // Validate authorization code (simple validation for demo)
-            if (!code.startsWith('auth_')) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(400);
-              res.end(JSON.stringify({
-                error: 'invalid_grant',
-                error_description: 'Invalid authorization code'
-              }));
-              return;
-            }
-            
-            // Validate client credentials for authorization code flow too
-            if (!this.validateOAuthCredentials(client_id, client_secret)) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(401);
-              res.end(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client credentials'
-              }));
-              return;
-            }
-          } else {
-            res.setHeader('Content-Type', 'application/json');
-            res.writeHead(400);
-            res.end(JSON.stringify({
-              error: 'unsupported_grant_type',
-              error_description: 'Supported grant types: client_credentials, authorization_code'
-            }));
-            return;
-          }
-          
-          // Generate access token for both flows
-          const accessToken = this.generateAccessToken();
-          
-          // Return token response
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(200);
-          res.end(JSON.stringify({
-            access_token: accessToken,
-            token_type: 'Bearer',
-            expires_in: 86400, // 24 hours
-            scope: 'fiken:read fiken:write'
-          }));
-          
-        } catch (error) {
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(400);
-          res.end(JSON.stringify({
-            error: 'invalid_request',
-            error_description: 'Invalid request format'
-          }));
-        }
-      });
-      
-    } catch (error) {
-      res.setHeader('Content-Type', 'application/json');
-      res.writeHead(500);
-      res.end(JSON.stringify({
-        error: 'server_error',
-        error_description: 'Internal server error'
-      }));
-    }
-  }
-
   async run(): Promise<void> {
     // Start MCP server on stdio for local development
     if (!process.env.PORT) {
@@ -1919,212 +1559,55 @@ class FikenMCPServer {
       return;
     }
 
-    // Start HTTP server for Heroku deployment
-    const port = parseInt(process.env.PORT || '3000', 10);
+    // HTTP mode is reachable over the network, so it never runs without a bearer token
+    if (!process.env.MCP_AUTH_TOKEN?.trim()) {
+      throw new Error('MCP_AUTH_TOKEN must be set when running in HTTP mode (PORT is set)');
+    }
+
+    const port = parseInt(process.env.PORT, 10);
     const httpServer = http.createServer(async (req, res) => {
-      // Enable CORS for ChatGPT
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      
+
       if (req.method === 'OPTIONS') {
         res.writeHead(200);
         res.end();
         return;
       }
-      
-      const parsedUrl = url.parse(req.url!, true);
-      
-      // Public endpoints (no authentication required)
-      if (req.method === 'GET' && parsedUrl.pathname === '/') {
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          name: 'Fiken MCP Server',
-          version: '0.1.0',
-          status: 'running',
-          authentication: 'oauth2',
-          token_endpoint: '/oauth/token',
-          oauth_discovery: '/.well-known/oauth-authorization-server',
-          tools: this.getToolsList().map(tool => tool.name),
-          protocols: ['mcp', 'http']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/health') {
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({ status: 'healthy' }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-authorization-server') {
-        // OAuth 2.0 Discovery Endpoint
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/openid-configuration') {
-        // OpenID Connect Discovery Endpoint (what ChatGPT actually looks for)
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code'],
-          subject_types_supported: ['public']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-protected-resource') {
-        // OAuth 2.0 Protected Resource Discovery Endpoint (what ChatGPT is looking for)
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          resource: `https://${req.headers.host}/mcp`,
-          authorization_servers: [`https://${req.headers.host}`],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          bearer_methods_supported: ['header'],
-          resource_documentation: `https://${req.headers.host}/`,
-          resource_registration: `https://${req.headers.host}/oauth/token`
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-protected-resource/mcp') {
-        // OAuth 2.0 Protected Resource Discovery for MCP path
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          resource: `https://${req.headers.host}/mcp`,
-          authorization_servers: [`https://${req.headers.host}`],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          bearer_methods_supported: ['header'],
-          resource_documentation: `https://${req.headers.host}/`,
-          resource_registration: `https://${req.headers.host}/oauth/token`
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/oauth/authorize') {
-        // OAuth 2.0 Authorization Endpoint - handle authorization code flow
-        const query = parsedUrl.query;
-        const clientId = query?.client_id as string;
-        const redirectUri = query?.redirect_uri as string;
-        const state = query?.state as string;
-        const responseType = query?.response_type as string;
-        
-        if (responseType === 'code' && clientId && redirectUri) {
-          // Generate authorization code
-          const authCode = `auth_${Buffer.from(JSON.stringify({clientId, timestamp: Date.now()})).toString('base64')}`;
-          
-          // Redirect back to ChatGPT with authorization code
-          const redirectUrl = new URL(redirectUri);
-          redirectUrl.searchParams.set('code', authCode);
-          if (state) redirectUrl.searchParams.set('state', state);
-          
-          res.writeHead(302, { 'Location': redirectUrl.toString() });
-          res.end();
-        } else {
-          // Show helpful page for manual testing
-          res.setHeader('Content-Type', 'text/html');
-          res.writeHead(200);
-          res.end(`
-            <!DOCTYPE html>
-            <html>
-            <head><title>OAuth Authorization</title></head>
-            <body>
-              <h1>OAuth 2.0 Authorization</h1>
-              <p>This server supports both <strong>Authorization Code</strong> and <strong>Client Credentials</strong> flows.</p>
-              <h2>For Authorization Code Flow:</h2>
-              <p>Use: <code>GET /oauth/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI</code></p>
-              <h2>For Client Credentials Flow:</h2>
-              <pre>POST https://${req.headers.host}/oauth/token
-Content-Type: application/x-www-form-urlencoded
 
-grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET</pre>
-              <p><a href="/.well-known/openid-configuration">View OpenID Configuration</a></p>
-            </body>
-            </html>
-          `);
+      try {
+        const parsedUrl = url.parse(req.url!, true);
+
+        if (req.method === 'GET' && parsedUrl.pathname === '/') {
+          this.sendJson(res, 200, {
+            name: 'Fiken MCP Server',
+            version: '0.1.0',
+            status: 'running',
+            authentication: 'bearer',
+            mcp_endpoint: '/mcp'
+          });
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/health') {
+          this.sendJson(res, 200, { status: 'healthy' });
+        } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
+          await this.handleMcpOverHttpWithAuth(req, res);
+        } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
+          if (!this.authenticateRequest(req)) {
+            this.sendAuthError(res);
+            return;
+          }
+          this.sendJson(res, 200, this.getOpenApiSpec());
+        } else {
+          this.sendJson(res, 404, { error: 'Not found' });
         }
-      } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/authorize') {
-        // Handle POST to authorization endpoint - redirect to client credentials
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(400);
-        res.end(JSON.stringify({
-          error: 'unsupported_grant_type',
-          error_description: 'This server only supports client_credentials grant type. Use POST /oauth/token with grant_type=client_credentials.'
-        }));
-      } else if (req.method === 'POST' && parsedUrl.pathname === '/oauth/token') {
-        // OAuth 2.0 Token Endpoint
-        await this.handleOAuthToken(req, res);
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/oauth-authorization-server/mcp') {
-        // OAuth 2.0 Discovery Endpoint with MCP suffix (what ChatGPT looks for)
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/.well-known/openid-configuration/mcp') {
-        // OpenID Connect Discovery with MCP suffix (what ChatGPT looks for)
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code'],
-          subject_types_supported: ['public']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/oauth-authorization-server') {
-        // OAuth 2.0 Discovery Endpoint under MCP path
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          authorization_endpoint: `https://${req.headers.host}/oauth/authorize`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code']
-        }));
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/mcp/.well-known/openid-configuration') {
-        // OpenID Connect Discovery Endpoint under MCP path (what ChatGPT looks for)
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          issuer: `https://${req.headers.host}`,
-          token_endpoint: `https://${req.headers.host}/oauth/token`,
-          grant_types_supported: ['client_credentials', 'authorization_code'],
-          token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-          scopes_supported: ['fiken:read', 'fiken:write'],
-          response_types_supported: ['token', 'code'],
-          subject_types_supported: ['public']
-        }));
-      } else if (req.method === 'POST' && parsedUrl.pathname === '/mcp') {
-        // Handle MCP protocol over HTTP with conditional authentication
-        await this.handleMcpOverHttpWithAuth(req, res);
-      } else if (req.method === 'GET' && parsedUrl.pathname === '/openapi.json') {
-        // Protected endpoint - require OAuth authentication
-        if (!this.authenticateRequest(req)) {
-          this.sendAuthError(res);
-          return;
+      } catch (error) {
+        // Never let a single request take the process down
+        logger.error('Unhandled error in HTTP request', error);
+        if (!res.headersSent) {
+          this.sendJson(res, 500, { error: 'Internal server error' });
+        } else {
+          res.end();
         }
-        // Provide OpenAPI spec as alternative
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify(this.getOpenApiSpec()));
-      } else {
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(404);
-        res.end(JSON.stringify({ error: 'Not found' }));
       }
     });
 

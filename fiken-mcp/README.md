@@ -236,6 +236,36 @@ Add to your Claude Desktop configuration:
 
 Or use system environment variables by omitting the `env` section.
 
+### Hermes Agent on Railway (HTTP)
+
+When `PORT` is set, the server runs in HTTP mode and serves MCP at `POST /mcp`. HTTP mode requires
+`MCP_AUTH_TOKEN` and refuses to start without it; every `/mcp` request must send `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+`fiken_configure` and `fiken_add_attachment_to_purchase_draft` are not available over HTTP.
+
+1. In the Railway project that runs Hermes, add a service from this repo (Railway runs `npm install`, `npm run build`, `npm start`).
+2. Set its variables:
+   ```bash
+   FIKEN_API_TOKEN=your-fiken-api-token
+   FIKEN_COMPANY_SLUG=your-company-slug
+   PORT=8080
+   MCP_AUTH_TOKEN=<output of: openssl rand -hex 32>
+   LOG_LEVEL=warn
+   ```
+   Don't generate a public domain; Hermes reaches the service over Railway's private network.
+   In the service settings, set the healthcheck path to `/health` and watch paths to `/fiken-mcp/**`, `/fiken-shared/**`, `/package.json`.
+3. On the Hermes service, set `FIKEN_MCP_TOKEN` to the same value as `MCP_AUTH_TOKEN` (define it either as a Railway variable
+   or in Hermes's `.env`, not both — the `.env` file wins), and add to Hermes's `config.yaml` (`/opt/data/config.yaml` in the official image):
+   ```yaml
+   mcp_servers:
+     fiken:
+       url: "http://<fiken-service-name>.railway.internal:8080/mcp"
+       headers:
+         Authorization: "Bearer ${FIKEN_MCP_TOKEN}"
+       tools:
+         exclude: [fiken_delete_purchase]   # everyone in Slack shares one Fiken identity
+   ```
+4. Run `/reload-mcp` in Hermes (a running gateway also picks up `mcp_servers` changes within about a minute), or check with `hermes mcp test fiken`.
+
 ### Other MCP Clients
 
 The server uses stdio transport and follows standard MCP protocol, making it compatible with any MCP client.

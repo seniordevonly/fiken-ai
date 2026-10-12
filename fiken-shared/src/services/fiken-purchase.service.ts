@@ -201,7 +201,7 @@ export class FikenPurchaseService extends FikenBaseService {
     
     const formData = new FormData();
     formData.append('filename', attachment.filename);
-    formData.append('file', attachment.file);
+    formData.append('file', this.toFilePart(attachment.file), attachment.filename);
     
     if (attachment.attachToPayment !== undefined) {
       formData.append('attachToPayment', String(attachment.attachToPayment));
@@ -246,7 +246,7 @@ export class FikenPurchaseService extends FikenBaseService {
     
     const formData = new FormData();
     formData.append('filename', attachment.filename);
-    formData.append('file', attachment.file);
+    formData.append('file', this.toFilePart(attachment.file), attachment.filename);
     
     if (attachment.attachToPayment !== undefined) {
       formData.append('attachToPayment', String(attachment.attachToPayment));

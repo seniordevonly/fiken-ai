@@ -142,6 +142,13 @@ export class FikenBaseService {
   }
 
   /**
+   * FormData stringifies a Buffer, so wrap it in a Blob to send it as a binary file part
+   */
+  protected toFilePart(file: Blob | Buffer): Blob {
+    return Buffer.isBuffer(file) ? new Blob([new Uint8Array(file)]) : file;
+  }
+
+  /**
    * Build full URL with query parameters
    */
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
@@ -406,7 +413,7 @@ export class FikenBaseService {
     }
     
     if (attachment.file) {
-      formData.append('file', attachment.file);
+      formData.append('file', this.toFilePart(attachment.file), attachment.filename);
     }
     
     return this.uploadMultipart<T>(endpoint, formData, options);
