@@ -100,11 +100,14 @@ describe('FikenPurchaseService', () => {
         const purchase: PurchaseRequest = {
           date: '2024-01-15',
           kind: 'supplier',
+          paid: false,
           currency: 'NOK',
           lines: [
             {
               description: 'Test item',
-              vatType: 'HIGH'
+              vatType: 'HIGH',
+              netPrice: 10000,
+              vat: 2500
             }
           ]
         };
@@ -150,12 +153,44 @@ describe('FikenPurchaseService', () => {
         const purchaseWithoutLines = {
           date: '2024-01-15',
           kind: 'supplier',
+          paid: false,
           currency: 'NOK',
           lines: []
         } as PurchaseRequest;
 
         await expect(service.createPurchase(companySlug, purchaseWithoutLines))
           .rejects.toThrow('Purchase lines are required and must be a non-empty array');
+      });
+
+      it('should require an amount on each line', async () => {
+        const purchaseWithoutAmount: PurchaseRequest = {
+          date: '2024-01-15',
+          kind: 'supplier',
+          paid: false,
+          currency: 'NOK',
+          lines: [{ description: 'No amount', vatType: 'HIGH' }]
+        };
+
+        await expect(service.createPurchase(companySlug, purchaseWithoutAmount))
+          .rejects.toThrow('Line 1: Either netPrice or netPriceInCurrency is required');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('should default paid to false', async () => {
+        const purchase = {
+          date: '2024-01-15',
+          kind: 'cash_purchase',
+          currency: 'NOK',
+          paymentAccount: '1920:10001',
+          lines: [{ description: 'Coffee', vatType: 'MEDIUM', netPrice: 10000 }]
+        } as unknown as PurchaseRequest;
+
+        mockSuccessResponse(undefined, 201);
+
+        await service.createPurchase(companySlug, purchase);
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
+        expect(body.paid).toBe(false);
       });
     });
 
@@ -256,6 +291,20 @@ describe('FikenPurchaseService', () => {
           .rejects.toThrow('Draft cash field is required and must be a boolean');
       });
 
+      it('should default paid to false', async () => {
+        const draft = {
+          cash: true,
+          lines: [{ text: 'Coffee', vatType: 'MEDIUM', incomeAccount: '7140', net: 10000, gross: 11500 }]
+        } as unknown as DraftRequest;
+
+        mockSuccessResponse(undefined, 201);
+
+        await service.createPurchaseDraft(companySlug, draft);
+
+        const body = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
+        expect(body.paid).toBe(false);
+      });
+
       it('should validate cash field', async () => {
         const draftWithoutCash = {
           lines: []
@@ -329,6 +378,22 @@ describe('FikenPurchaseService', () => {
           .rejects.toThrow('Attachment filename must end with .png, .jpeg, .jpg, .gif, or .pdf');
       });
 
+      it('should send attachToPayment and attachToSale as query parameters', async () => {
+        mockSuccessResponse(undefined, 201);
+
+        await service.addAttachmentToPurchase(companySlug, 123, {
+          filename: 'receipt.pdf',
+          file: Buffer.from('test'),
+          attachToSale: true
+        });
+
+        const [url, init] = mockFetch.mock.calls[0];
+        expect(url).toContain(`/companies/${companySlug}/purchases/123/attachments?attachToSale=true`);
+        const form = init!.body as FormData;
+        expect(form.get('filename')).toBe('receipt.pdf');
+        expect(form.has('attachToSale')).toBe(false);
+      });
+
       it('should validate at least one attachment type is specified', async () => {
         const attachmentWithoutType: AttachmentUpload = {
           filename: 'test.pdf',
@@ -338,6 +403,100 @@ describe('FikenPurchaseService', () => {
         await expect(service.addAttachmentToPurchase(companySlug, 123, attachmentWithoutType))
           .rejects.toThrow('At least one of attachToPayment or attachToSale must be true');
       });
+    });
+  });
+
+  describe('addAttachmentToPurchaseDraft', () => {
+    it('should upload filename and file only, without attach flags', async () => {
+      mockSuccessResponse(undefined, 201);
+
+      await service.addAttachmentToPurchaseDraft(companySlug, 7, {
+        filename: 'invoice.pdf',
+        file: Buffer.from('test')
+      });
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toMatch(new RegExp(`/companies/${companySlug}/purchases/drafts/7/attachments$`));
+      const form = init!.body as FormData;
+      expect(form.get('filename')).toBe('invoice.pdf');
+      expect(form.get('file')).toBeInstanceOf(Blob);
+      expect(form.has('attachToSale')).toBe(false);
+      expect(form.has('attachToPayment')).toBe(false);
+    });
+  });
+
+  describe('Draft, payment and accrual reads and actions', () => {
+    const lastCall = () => {
+      const [url, init] = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      return { url: String(url), method: init!.method, body: init!.body };
+    };
+
+    it('lists purchase drafts with pagination params', async () => {
+      mockSuccessResponse([]);
+
+      await service.getPurchaseDrafts(companySlug, { page: 1, pageSize: 50 });
+
+      expect(lastCall()).toMatchObject({ method: 'GET' });
+      expect(lastCall().url).toContain(`/companies/${companySlug}/purchases/drafts?page=1&pageSize=50`);
+    });
+
+    it('updates a purchase draft with PUT', async () => {
+      mockSuccessResponse(undefined, 201);
+      const draft: DraftRequest = {
+        cash: true,
+        paid: false,
+        lines: [{ text: 'Coffee', vatType: 'MEDIUM', incomeAccount: '7140', net: 10000, gross: 11500 }]
+      };
+
+      await service.updatePurchaseDraft(companySlug, 45, draft);
+
+      expect(lastCall()).toMatchObject({ method: 'PUT', body: JSON.stringify(draft) });
+      expect(lastCall().url).toMatch(/\/purchases\/drafts\/45$/);
+    });
+
+    it('creates a purchase from a draft', async () => {
+      mockSuccessResponse(undefined, 201);
+
+      await service.createPurchaseFromDraft(companySlug, 45);
+
+      expect(lastCall()).toMatchObject({ method: 'POST' });
+      expect(lastCall().url).toMatch(/\/purchases\/drafts\/45\/createPurchase$/);
+    });
+
+    it('rejects an invalid draftId', async () => {
+      await expect(service.createPurchaseFromDraft(companySlug, 0))
+        .rejects.toThrow('draftId is required and must be a positive integer');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('gets one payment of a purchase', async () => {
+      mockSuccessResponse({ paymentId: 9, date: '2024-01-20', account: '1920:10001', amount: 12500 });
+
+      await service.getPurchasePayment(companySlug, 123, 9);
+
+      expect(lastCall().url).toMatch(/\/purchases\/123\/payments\/9$/);
+    });
+
+    it('lists, gets and creates accruals', async () => {
+      mockSuccessResponse([]);
+      await service.getPurchaseAccruals(companySlug, 123);
+      expect(lastCall().url).toMatch(/\/purchases\/123\/accruals$/);
+
+      mockSuccessResponse({ accrualId: 5 });
+      await service.getPurchaseAccrual(companySlug, 123, 5);
+      expect(lastCall().url).toMatch(/\/purchases\/123\/accruals\/5$/);
+
+      mockSuccessResponse(undefined, 201);
+      const accrual = { lineId: 77, startDate: '2024-01-01', periods: 12, account: '1749' as const };
+      await service.createPurchaseAccrual(companySlug, 123, accrual);
+      expect(lastCall()).toMatchObject({ method: 'POST', body: JSON.stringify(accrual) });
+    });
+
+    it('validates accrual periods', async () => {
+      await expect(service.createPurchaseAccrual(companySlug, 123, {
+        lineId: 77, startDate: '2024-01-01', periods: 121, account: '1749'
+      })).rejects.toThrow('Accrual periods must be an integer from 1 to 120');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
@@ -360,11 +519,13 @@ describe('FikenPurchaseService', () => {
       const validPurchase: PurchaseRequest = {
         date: '2024-01-15',
         kind: 'supplier',
+        paid: false,
         currency: 'NOK',
         lines: [
           {
             description: 'Valid item',
-            vatType: 'HIGH'
+            vatType: 'HIGH',
+            netPriceInCurrency: 6800
           }
         ]
       };

@@ -13,6 +13,8 @@ import {
   Payment,
   Attachment,
   AttachmentUpload,
+  PurchaseAccrualRequest,
+  PurchaseAccrualResult,
   FikenApiResponse
 } from '../types/fiken.types';
 
@@ -47,7 +49,8 @@ export class FikenPurchaseService extends FikenBaseService {
     this.validateCompanySlug(companySlug);
     this.validatePurchaseRequest(purchase);
     
-    return this.post<void>(`/companies/${companySlug}/purchases`, purchase);
+    // paid is required by the spec; default it for callers that omit it
+    return this.post<void>(`/companies/${companySlug}/purchases`, { ...purchase, paid: purchase.paid ?? false });
   }
 
   /**
@@ -109,13 +112,12 @@ export class FikenPurchaseService extends FikenBaseService {
     draft: DraftRequest
   ): Promise<FikenApiResponse<void>> {
     this.validateCompanySlug(companySlug);
-    this.validateDraftRequest(draft);
-    
     // Ensure paid is always set (defaults to false if not provided)
-    const draftWithPaid: DraftRequest = {
+    const draftWithPaid: DraftRequest = draft && {
       ...draft,
       paid: draft.paid ?? false
     };
+    this.validateDraftRequest(draftWithPaid);
     
     return this.post<void>(`/companies/${companySlug}/purchases/drafts`, draftWithPaid);
   }
@@ -145,13 +147,12 @@ export class FikenPurchaseService extends FikenBaseService {
   ): Promise<FikenApiResponse<void>> {
     this.validateCompanySlug(companySlug);
     this.validateId(draftId, 'draftId');
-    this.validateDraftRequest(draft);
-    
     // Ensure paid is always set (defaults to false if not provided)
-    const draftWithPaid: DraftRequest = {
+    const draftWithPaid: DraftRequest = draft && {
       ...draft,
       paid: draft.paid ?? false
     };
+    this.validateDraftRequest(draftWithPaid);
     
     return this.put<void>(`/companies/${companySlug}/purchases/drafts/${draftId}`, draftWithPaid);
   }
@@ -168,6 +169,20 @@ export class FikenPurchaseService extends FikenBaseService {
     this.validateId(draftId, 'draftId');
     
     return this.delete<void>(`/companies/${companySlug}/purchases/drafts/${draftId}`);
+  }
+
+  /**
+   * Create a purchase from an existing draft
+   * POST /companies/{companySlug}/purchases/drafts/{draftId}/createPurchase
+   */
+  async createPurchaseFromDraft(
+    companySlug: string,
+    draftId: number
+  ): Promise<FikenApiResponse<void>> {
+    this.validateCompanySlug(companySlug);
+    this.validateId(draftId, 'draftId');
+    
+    return this.post<void>(`/companies/${companySlug}/purchases/drafts/${draftId}/createPurchase`);
   }
 
   // ========== PURCHASE ATTACHMENT OPERATIONS ==========
@@ -199,20 +214,26 @@ export class FikenPurchaseService extends FikenBaseService {
     this.validateId(purchaseId, 'purchaseId');
     this.validateAttachmentUpload(attachment);
     
+    // At least one of attachToPayment and attachToSale must be true
+    if (!attachment.attachToPayment && !attachment.attachToSale) {
+      throw new Error('At least one of attachToPayment or attachToSale must be true');
+    }
+    
     const formData = new FormData();
     formData.append('filename', attachment.filename);
     formData.append('file', this.toFilePart(attachment.file), attachment.filename);
     
+    // The spec takes the flags as query parameters, not form fields
+    const flags = new URLSearchParams();
     if (attachment.attachToPayment !== undefined) {
-      formData.append('attachToPayment', String(attachment.attachToPayment));
+      flags.append('attachToPayment', String(attachment.attachToPayment));
     }
-    
     if (attachment.attachToSale !== undefined) {
-      formData.append('attachToSale', String(attachment.attachToSale));
+      flags.append('attachToSale', String(attachment.attachToSale));
     }
     
     return this.uploadMultipart<void>(
-      `/companies/${companySlug}/purchases/${purchaseId}/attachments`,
+      `/companies/${companySlug}/purchases/${purchaseId}/attachments?${flags}`,
       formData
     );
   }
@@ -244,17 +265,10 @@ export class FikenPurchaseService extends FikenBaseService {
     this.validateId(draftId, 'draftId');
     this.validateAttachmentUpload(attachment);
     
+    // Draft uploads take only filename and file; attachToPayment/attachToSale don't apply
     const formData = new FormData();
     formData.append('filename', attachment.filename);
     formData.append('file', this.toFilePart(attachment.file), attachment.filename);
-    
-    if (attachment.attachToPayment !== undefined) {
-      formData.append('attachToPayment', String(attachment.attachToPayment));
-    }
-    
-    if (attachment.attachToSale !== undefined) {
-      formData.append('attachToSale', String(attachment.attachToSale));
-    }
     
     return this.uploadMultipart<void>(
       `/companies/${companySlug}/purchases/drafts/${draftId}/attachments`,
@@ -310,6 +324,67 @@ export class FikenPurchaseService extends FikenBaseService {
     return this.get<Payment>(`/companies/${companySlug}/purchases/${purchaseId}/payments/${paymentId}`);
   }
 
+  // ========== PURCHASE ACCRUAL OPERATIONS ==========
+
+  /**
+   * Get all accruals on a purchase
+   * GET /companies/{companySlug}/purchases/{purchaseId}/accruals
+   */
+  async getPurchaseAccruals(
+    companySlug: string,
+    purchaseId: number
+  ): Promise<FikenApiResponse<PurchaseAccrualResult[]>> {
+    this.validateCompanySlug(companySlug);
+    this.validateId(purchaseId, 'purchaseId');
+    
+    return this.get<PurchaseAccrualResult[]>(`/companies/${companySlug}/purchases/${purchaseId}/accruals`);
+  }
+
+  /**
+   * Accrue one purchase line over monthly periods
+   * POST /companies/{companySlug}/purchases/{purchaseId}/accruals
+   */
+  async createPurchaseAccrual(
+    companySlug: string,
+    purchaseId: number,
+    accrual: PurchaseAccrualRequest
+  ): Promise<FikenApiResponse<void>> {
+    this.validateCompanySlug(companySlug);
+    this.validateId(purchaseId, 'purchaseId');
+    
+    if (!accrual) {
+      throw new Error('Accrual request is required');
+    }
+    this.validateId(accrual.lineId, 'lineId');
+    if (!accrual.startDate || !this.isValidDate(accrual.startDate)) {
+      throw new Error('Accrual startDate is required (yyyy-mm-dd)');
+    }
+    if (!Number.isInteger(accrual.periods) || accrual.periods < 1 || accrual.periods > 120) {
+      throw new Error('Accrual periods must be an integer from 1 to 120');
+    }
+    if (!accrual.account) {
+      throw new Error('Accrual account is required');
+    }
+    
+    return this.post<void>(`/companies/${companySlug}/purchases/${purchaseId}/accruals`, accrual);
+  }
+
+  /**
+   * Get one accrual on a purchase
+   * GET /companies/{companySlug}/purchases/{purchaseId}/accruals/{accrualId}
+   */
+  async getPurchaseAccrual(
+    companySlug: string,
+    purchaseId: number,
+    accrualId: number
+  ): Promise<FikenApiResponse<PurchaseAccrualResult>> {
+    this.validateCompanySlug(companySlug);
+    this.validateId(purchaseId, 'purchaseId');
+    this.validateId(accrualId, 'accrualId');
+    
+    return this.get<PurchaseAccrualResult>(`/companies/${companySlug}/purchases/${purchaseId}/accruals/${accrualId}`);
+  }
+
   // ========== VALIDATION METHODS ==========
 
   /**
@@ -344,6 +419,10 @@ export class FikenPurchaseService extends FikenBaseService {
       
       if (!line.vatType) {
         throw new Error(`Line ${index + 1}: VAT type is required`);
+      }
+      
+      if (typeof line.netPrice !== 'number' && typeof line.netPriceInCurrency !== 'number') {
+        throw new Error(`Line ${index + 1}: Either netPrice or netPriceInCurrency is required`);
       }
     });
   }
@@ -408,8 +487,8 @@ export class FikenPurchaseService extends FikenBaseService {
       throw new Error('Payment account is required');
     }
     
-    if (typeof payment.amount !== 'number') {
-      throw new Error('Payment amount is required and must be a number');
+    if (!Number.isInteger(payment.amount)) {
+      throw new Error('Payment amount is required and must be an integer number of cents');
     }
   }
 
@@ -437,11 +516,6 @@ export class FikenPurchaseService extends FikenBaseService {
     
     if (!hasValidExtension) {
       throw new Error('Attachment filename must end with .png, .jpeg, .jpg, .gif, or .pdf');
-    }
-    
-    // At least one of attachToPayment or attachToSale must be true
-    if (!attachment.attachToPayment && !attachment.attachToSale) {
-      throw new Error('At least one of attachToPayment or attachToSale must be true');
     }
   }
 }

@@ -153,9 +153,10 @@ export class FikenBaseService {
     // Properly join base URL and endpoint to avoid path replacement
     const baseUrl = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
-    // Reject anything that could escape the intended path (e.g. "..", encoded segments)
+    // Reject anything that could escape the intended path (e.g. "..", encoded segments); ':' is allowed for
+    // reskontro sub-account codes like 1500:10001
     const [path] = cleanEndpoint.split('?');
-    if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/.test(path)) {
+    if (!/^[A-Za-z0-9_:-]+(\/[A-Za-z0-9_:-]+)*$/.test(path)) {
       throw new Error(`Invalid API endpoint path: ${path}`);
     }
     const fullUrl = `${baseUrl}/${cleanEndpoint}`;
@@ -323,7 +324,9 @@ export class FikenBaseService {
     // Extract pagination headers if present
     const headers: FikenPaginationHeaders | undefined = this.extractPaginationHeaders(response);
 
-    return { data, headers };
+    const location = response.headers.get('Location') || undefined;
+
+    return { data, headers, ...(location && { location }) };
   }
 
   /**
