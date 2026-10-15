@@ -32,6 +32,8 @@ accounting firm (Fiken partner) uses for bookkeeping across client companies.
 
 Default: `purchases,sales,invoices,contacts,accounting,inbox` (74 tools). Unknown names are logged and ignored.
 
+Every tool with its description and inputs: [TOOLS.md](TOOLS.md) (regenerate with `npm run docs:tools`).
+
 **Scope:** list/get, create and update operations only. Nothing irreversible is exposed: no deletes
 (`fiken_delete_purchase` is commented out), no recurring invoice creation or scheduling, no file uploads over HTTP,
 and nothing that sends documents to customers except `fiken_send_invoice`. Create tools return the new resource's

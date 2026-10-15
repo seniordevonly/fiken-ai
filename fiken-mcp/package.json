@@ -12,6 +12,7 @@
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",
+    "docs:tools": "npm run build && node scripts/generate-tools-doc.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
