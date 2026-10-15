@@ -13,6 +13,8 @@ export interface LoggerConfig {
   enableFile?: boolean;
   logDir?: string;
   serviceName?: string;
+  // Install process-wide uncaughtException/unhandledRejection handlers; only the default logger does
+  handleExceptions?: boolean;
 }
 
 export interface HttpLogData {
@@ -27,24 +29,30 @@ export interface HttpLogData {
   error?: string;
 }
 
+const normalizeConfig = (config: LoggerConfig): LoggerConfig => ({
+  level: config.level || process.env.LOG_LEVEL || 'info',
+  enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
+  enableFile: config.enableFile ?? true, // Default to file logging
+  logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
+  serviceName: config.serviceName || 'fiken-shared',
+  handleExceptions: config.handleExceptions ?? false,
+});
+
 class LoggerService {
   private logger: winston.Logger;
   private config: LoggerConfig;
 
-  constructor(config: LoggerConfig = {}) {
-    this.config = {
-      level: config.level || process.env.LOG_LEVEL || 'info',
-      enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
-      enableFile: config.enableFile ?? true, // Default to file logging
-      logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
-      serviceName: config.serviceName || 'fiken-shared',
-      ...config
-    };
-
-    this.logger = this.createLogger();
+  constructor(config: LoggerConfig = {}, winstonLogger?: winston.Logger) {
+    this.config = normalizeConfig(config);
+    this.logger = winstonLogger ?? this.createLogger();
   }
 
   private createLogger(): winston.Logger {
+    // A silent logger needs no transports, so it opens no files
+    if (this.config.level === 'silent') {
+      return winston.createLogger({ silent: true });
+    }
+
     const transports: winston.transport[] = [];
 
     // Console transport - send ALL levels to stderr to keep stdout free for JSON-RPC
@@ -98,12 +106,13 @@ class LoggerService {
       defaultMeta: { service: this.config.serviceName },
       transports,
       // Handle uncaught exceptions and rejections
-      exceptionHandlers: this.config.enableFile ? [
+      // Pass undefined rather than [] when off: winston installs process listeners even for an empty array
+      exceptionHandlers: this.config.enableFile && this.config.handleExceptions ? [
         new winston.transports.File({ filename: `${this.config.logDir}/exceptions.log`, ...LOG_FILE_ROTATION })
-      ] : [],
-      rejectionHandlers: this.config.enableFile ? [
+      ] : undefined,
+      rejectionHandlers: this.config.enableFile && this.config.handleExceptions ? [
         new winston.transports.File({ filename: `${this.config.logDir}/rejections.log`, ...LOG_FILE_ROTATION })
-      ] : []
+      ] : undefined
     });
   }
 
@@ -182,9 +191,8 @@ class LoggerService {
    * Create a child logger with additional context
    */
   child(meta: any): LoggerService {
-    const childLogger = new LoggerService(this.config);
-    childLogger.logger = this.logger.child(meta);
-    return childLogger;
+    // Reuse the parent's transports instead of opening new files
+    return new LoggerService(this.config, this.logger.child(meta));
   }
 
   /**
@@ -364,11 +372,21 @@ class LoggerService {
 }
 
 // Create default logger instance
-export const logger = new LoggerService();
+export const logger = new LoggerService({ handleExceptions: true });
+
+// Each logger opens its own file handles, so services re-created on every reconfigure share one per config
+const loggerCache = new Map<string, LoggerService>();
 
 // Export factory function for custom loggers
 export const createLogger = (config: LoggerConfig): LoggerService => {
-  return new LoggerService(config);
+  const normalized = normalizeConfig(config);
+  const key = JSON.stringify(normalized);
+  let cached = loggerCache.get(key);
+  if (!cached) {
+    cached = new LoggerService(normalized);
+    loggerCache.set(key, cached);
+  }
+  return cached;
 };
 
 // Export types

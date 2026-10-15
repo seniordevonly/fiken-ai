@@ -55,6 +55,48 @@ const ConfigSchema = z.object({
 
 const CompanySlugSchema = z.string().min(1, 'Company slug is required');
 
+// Fiken amounts are in cents, and on foreign-currency purchases netPrice/vat are NOK while
+// *InCurrency is the original currency; models mix these up, so expose totals in major units
+const centsToUnits = (cents: number) => Math.round(cents) / 100;
+
+const sumCents = (lines: any[], field: string): number | null => {
+  let total = 0;
+  for (const line of lines) {
+    if (typeof line[field] !== 'number') return null;
+    total += line[field];
+  }
+  return total;
+};
+
+const withAmountSummary = (purchase: any) => {
+  if (!purchase || !Array.isArray(purchase.lines)) return purchase;
+
+  const currency = purchase.currency || 'NOK';
+  const isNok = currency === 'NOK';
+  const netNok = sumCents(purchase.lines, 'netPrice');
+  const vatNok = sumCents(purchase.lines, 'vat');
+  const net = isNok ? netNok : sumCents(purchase.lines, 'netPriceInCurrency');
+  const vat = isNok ? vatNok : sumCents(purchase.lines, 'vatInCurrency');
+
+  return {
+    amounts: {
+      currency,
+      net: net === null ? null : centsToUnits(net),
+      vat: vat === null ? null : centsToUnits(vat),
+      total: net === null || vat === null ? null : centsToUnits(net + vat),
+      netNok: netNok === null ? null : centsToUnits(netNok),
+      vatNok: vatNok === null ? null : centsToUnits(vatNok),
+      totalNok: netNok === null || vatNok === null ? null : centsToUnits(netNok + vatNok),
+    },
+    ...purchase,
+  };
+};
+
+const PURCHASE_AMOUNTS_NOTE =
+  'Each purchase includes "amounts" in major units (68.5 = 68.50): net/vat/total are in "currency", ' +
+  'netNok/vatNok/totalNok are NOK booked at Fiken\'s exchange rate. Prefer these over the raw line fields, ' +
+  'which are in cents: netPrice/vat are always NOK, netPriceInCurrency/vatInCurrency are in the purchase currency.';
+
 const PurchaseQueryParamsSchema = z.object({
   page: z.number().int().min(0).optional(),
   pageSize: z.number().int().min(1).max(100).optional(),
@@ -202,7 +244,7 @@ class FikenMCPServer {
       },
       {
         name: 'fiken_get_purchases',
-        description: 'Get all purchases for a company with optional filtering and pagination',
+        description: `Get all purchases for a company with optional filtering and pagination. ${PURCHASE_AMOUNTS_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -258,8 +300,10 @@ class FikenMCPServer {
                     type: 'object',
                     properties: {
                       description: { type: 'string', description: 'Line item description' },
-                      netPrice: { type: 'number', description: 'Net price in cents' },
-                      vat: { type: 'number', description: 'VAT amount in cents' },
+                      netPrice: { type: 'number', description: 'Net price in NOK cents (øre)' },
+                      vat: { type: 'number', description: 'VAT amount in NOK cents (øre)' },
+                      netPriceInCurrency: { type: 'number', description: 'Net price in cents of the purchase currency (use for non-NOK purchases)' },
+                      vatInCurrency: { type: 'number', description: 'VAT amount in cents of the purchase currency (use for non-NOK purchases)' },
                       account: { type: 'string', description: 'Account code' },
                       vatType: { type: 'string', enum: VatTypeEnum.options, description: 'VAT type' },
                     },
@@ -275,7 +319,7 @@ class FikenMCPServer {
       },
       {
         name: 'fiken_get_purchase',
-        description: 'Get a specific purchase by ID',
+        description: `Get a specific purchase by ID. ${PURCHASE_AMOUNTS_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -432,7 +476,8 @@ class FikenMCPServer {
                 filename: { type: 'string', description: 'Filename to use for the attachment' },
                 filePath: { type: 'string', description: 'Absolute or relative path to the file on disk' },
                 contentType: { type: 'string', description: 'Optional MIME type of the file' },
-                attachToPayment: { type: 'boolean', description: 'Whether to attach to payment if applicable' },
+                attachToPayment: { type: 'boolean', description: 'True if the file documents the payment (card/bank receipt)' },
+                attachToSale: { type: 'boolean', description: 'True if the file documents the purchase itself (invoice/receipt). Defaults to true when neither flag is set' },
               },
               required: ['filename', 'filePath'],
             },
@@ -893,7 +938,7 @@ class FikenMCPServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify(Array.isArray(result.data) ? { ...result, data: result.data.map(withAmountSummary) } : result, null, 2),
         },
       ],
     };
@@ -943,8 +988,11 @@ class FikenMCPServer {
       filePath: z.string().min(1),
       contentType: z.string().optional(),
       attachToPayment: z.boolean().optional(),
+      attachToSale: z.boolean().optional(),
     });
     const att = AttachmentInputSchema.parse(attachment);
+    // Fiken requires at least one flag to be true; a purchase attachment is usually the invoice/receipt
+    const attachToSale = att.attachToSale ?? !att.attachToPayment;
     
     // Read file from disk
     const fileBuffer = await fs.readFile(att.filePath);
@@ -953,6 +1001,7 @@ class FikenMCPServer {
       filename: att.filename,
       file: fileBuffer,
       attachToPayment: att.attachToPayment,
+      attachToSale,
     };
     
     await this.purchaseService!.addAttachmentToPurchaseDraft(finalCompanySlug, draftId, upload);
@@ -1011,7 +1060,7 @@ class FikenMCPServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify({ ...result, data: withAmountSummary(result.data) }, null, 2),
         },
       ],
     };
@@ -1677,102 +1726,102 @@ class FikenMCPServer {
 
   private async handleOAuthToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
-      let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-      
-      req.on('end', () => {
-        try {
-          // Parse form data or JSON
-          let params: any;
-          const contentType = req.headers['content-type'] || '';
-          
-          if (contentType.includes('application/x-www-form-urlencoded')) {
-            params = new URLSearchParams(body);
-            params = Object.fromEntries(params.entries());
-          } else {
-            params = JSON.parse(body);
+      const body = await this.readBody(req);
+      if (body === null) {
+        res.setHeader('Connection', 'close');
+        this.sendJson(res, 413, { error: 'invalid_request', error_description: 'Request body too large' });
+        return;
+      }
+
+      try {
+        // Parse form data or JSON
+        let params: any;
+        const contentType = req.headers['content-type'] || '';
+        
+        if (contentType.includes('application/x-www-form-urlencoded')) {
+          params = new URLSearchParams(body);
+          params = Object.fromEntries(params.entries());
+        } else {
+          params = JSON.parse(body);
+        }
+        
+        const { grant_type, client_id, client_secret, code, redirect_uri } = params;
+        
+        if (grant_type === 'client_credentials') {
+          // Handle Client Credentials flow
+          if (!this.validateOAuthCredentials(client_id, client_secret)) {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(401);
+            res.end(JSON.stringify({
+              error: 'invalid_client',
+              error_description: 'Invalid client credentials'
+            }));
+            return;
           }
-          
-          const { grant_type, client_id, client_secret, code, redirect_uri } = params;
-          
-          if (grant_type === 'client_credentials') {
-            // Handle Client Credentials flow
-            if (!this.validateOAuthCredentials(client_id, client_secret)) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(401);
-              res.end(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client credentials'
-              }));
-              return;
-            }
-          } else if (grant_type === 'authorization_code') {
-            // Handle Authorization Code flow
-            if (!code) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(400);
-              res.end(JSON.stringify({
-                error: 'invalid_request',
-                error_description: 'Authorization code is required'
-              }));
-              return;
-            }
-            
-            // Validate authorization code (simple validation for demo)
-            if (!code.startsWith('auth_')) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(400);
-              res.end(JSON.stringify({
-                error: 'invalid_grant',
-                error_description: 'Invalid authorization code'
-              }));
-              return;
-            }
-            
-            // Validate client credentials for authorization code flow too
-            if (!this.validateOAuthCredentials(client_id, client_secret)) {
-              res.setHeader('Content-Type', 'application/json');
-              res.writeHead(401);
-              res.end(JSON.stringify({
-                error: 'invalid_client',
-                error_description: 'Invalid client credentials'
-              }));
-              return;
-            }
-          } else {
+        } else if (grant_type === 'authorization_code') {
+          // Handle Authorization Code flow
+          if (!code) {
             res.setHeader('Content-Type', 'application/json');
             res.writeHead(400);
             res.end(JSON.stringify({
-              error: 'unsupported_grant_type',
-              error_description: 'Supported grant types: client_credentials, authorization_code'
+              error: 'invalid_request',
+              error_description: 'Authorization code is required'
             }));
             return;
           }
           
-          // Generate access token for both flows
-          const accessToken = this.generateAccessToken();
+          // Validate authorization code (simple validation for demo)
+          if (!code.startsWith('auth_')) {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(400);
+            res.end(JSON.stringify({
+              error: 'invalid_grant',
+              error_description: 'Invalid authorization code'
+            }));
+            return;
+          }
           
-          // Return token response
-          res.setHeader('Content-Type', 'application/json');
-          res.writeHead(200);
-          res.end(JSON.stringify({
-            access_token: accessToken,
-            token_type: 'Bearer',
-            expires_in: 86400, // 24 hours
-            scope: 'fiken:read fiken:write'
-          }));
-          
-        } catch (error) {
+          // Validate client credentials for authorization code flow too
+          if (!this.validateOAuthCredentials(client_id, client_secret)) {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(401);
+            res.end(JSON.stringify({
+              error: 'invalid_client',
+              error_description: 'Invalid client credentials'
+            }));
+            return;
+          }
+        } else {
           res.setHeader('Content-Type', 'application/json');
           res.writeHead(400);
           res.end(JSON.stringify({
-            error: 'invalid_request',
-            error_description: 'Invalid request format'
+            error: 'unsupported_grant_type',
+            error_description: 'Supported grant types: client_credentials, authorization_code'
           }));
+          return;
         }
-      });
+        
+        // Generate access token for both flows
+        const accessToken = this.generateAccessToken();
+        
+        // Return token response
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          access_token: accessToken,
+          token_type: 'Bearer',
+          expires_in: 86400, // 24 hours
+          scope: 'fiken:read fiken:write'
+        }));
+        
+      } catch (error) {
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(400);
+        res.end(JSON.stringify({
+          error: 'invalid_request',
+          error_description: 'Invalid request format'
+        }));
+      }
       
     } catch (error) {
       res.setHeader('Content-Type', 'application/json');

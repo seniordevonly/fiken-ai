@@ -27,11 +27,9 @@ export class FikenBaseService {
 
   constructor(config: FikenConfig) {
     // Ensure base URL always ends with /api/v2
-    let baseUrl = config.baseUrl || 'https://api.fiken.no/api/v2';
-    if (baseUrl === 'https://api.fiken.no' || baseUrl.endsWith('/api/fiken.no')) {
-      baseUrl = 'https://api.fiken.no/api/v2';
-    } else if (!baseUrl.endsWith('/api/v2')) {
-      baseUrl = baseUrl.replace(/\/$/, '') + '/api/v2';
+    let baseUrl = (config.baseUrl || 'https://api.fiken.no/api/v2').replace(/\/+$/, '');
+    if (!baseUrl.endsWith('/api/v2')) {
+      baseUrl += '/api/v2';
     }
     this.baseUrl = baseUrl;
     this.apiToken = config.apiToken;
@@ -155,6 +153,11 @@ export class FikenBaseService {
     // Properly join base URL and endpoint to avoid path replacement
     const baseUrl = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+    // Reject anything that could escape the intended path (e.g. "..", encoded segments)
+    const [path] = cleanEndpoint.split('?');
+    if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/.test(path)) {
+      throw new Error(`Invalid API endpoint path: ${path}`);
+    }
     const fullUrl = `${baseUrl}/${cleanEndpoint}`;
     
     const url = new URL(fullUrl);
@@ -223,12 +226,17 @@ export class FikenBaseService {
       
       if (!response.ok) {
         // Log error response
+        // The body can only be read once, so parse it here and hand it to handleErrorResponse
         let responseData: any;
         try {
           const responseText = await response.text();
-          responseData = responseText ? JSON.parse(responseText) : null;
+          try {
+            responseData = responseText ? JSON.parse(responseText) : null;
+          } catch {
+            responseData = responseText;
+          }
         } catch {
-          responseData = '[Unable to parse response]';
+          responseData = '[Unable to read response]';
         }
         
         this.logger.httpResponse({
@@ -243,7 +251,7 @@ export class FikenBaseService {
           error: `HTTP ${response.status}: ${response.statusText}`
         });
         
-        await this.handleErrorResponse(response);
+        this.handleErrorResponse(response, responseData);
       }
       
       // Log successful response (we'll log the actual data in handleResponse)
@@ -316,23 +324,17 @@ export class FikenBaseService {
   /**
    * Handle error response
    */
-  private async handleErrorResponse(response: Response): Promise<never> {
+  private handleErrorResponse(response: Response, errorData: any): never {
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
     
-    try {
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json() as any;
-        if (errorData?.error_description) {
-          errorMessage = errorData.error_description;
-        } else if (errorData?.message) {
-          errorMessage = errorData.message;
-        } else if (errorData?.error) {
-          errorMessage = errorData.error;
-        }
-      }
-    } catch {
-      // If we can't parse the error response, use the default message
+    if (errorData?.error_description) {
+      errorMessage = `${errorMessage} - ${errorData.error_description}`;
+    } else if (errorData?.message) {
+      errorMessage = `${errorMessage} - ${errorData.message}`;
+    } else if (errorData?.error) {
+      errorMessage = `${errorMessage} - ${errorData.error}`;
+    } else if (typeof errorData === 'string' && errorData.trim()) {
+      errorMessage = `${errorMessage} - ${errorData.trim().slice(0, 500)}`;
     }
 
     throw new Error(errorMessage);
@@ -373,14 +375,21 @@ export class FikenBaseService {
     if (!companySlug || typeof companySlug !== 'string') {
       throw new Error('Company slug is required and must be a string');
     }
+    if (!/^[A-Za-z0-9_-]+$/.test(companySlug)) {
+      throw new Error('Company slug may only contain letters, digits, "-" and "_"');
+    }
   }
 
   /**
    * Validate required ID parameter
    */
   protected validateId(id: number | string, paramName: string): void {
-    if (!id || (typeof id !== 'number' && typeof id !== 'string')) {
-      throw new Error(`${paramName} is required and must be a number or string`);
+    // Ids are interpolated into URL paths, so only plain positive integers are allowed
+    const valid = typeof id === 'number'
+      ? Number.isSafeInteger(id) && id > 0
+      : typeof id === 'string' && /^[1-9]\d*$/.test(id);
+    if (!valid) {
+      throw new Error(`${paramName} is required and must be a positive integer`);
     }
   }
 
