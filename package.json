@@ -7,10 +7,9 @@
     "start": "cd fiken-mcp && npm start",
     "postinstall": "cd fiken-shared && npm install && npm run build && cd ../fiken-mcp && npm install",
     "heroku-postbuild": "npm run build",
-    "logs": "railway logs -s web",
-    "logs:problems": "railway logs -s web -f '@level:error OR @level:warn'",
-    "logs:tools": "railway logs -s web -f '\"Tool call\"'",
-    "logs:http": "railway logs -s web --http"
+    "logs": "railway logs -p a9f5c6a8-193e-470b-b5b2-ee8c2f4a9e17 -e e2886363-3125-4b3d-911a-a2b00e6cc51d -s fiken-mcp",
+    "logs:problems": "railway logs -p a9f5c6a8-193e-470b-b5b2-ee8c2f4a9e17 -e e2886363-3125-4b3d-911a-a2b00e6cc51d -s fiken-mcp -f '@level:error OR @level:warn'",
+    "logs:tools": "railway logs -p a9f5c6a8-193e-470b-b5b2-ee8c2f4a9e17 -e e2886363-3125-4b3d-911a-a2b00e6cc51d -s fiken-mcp -f '\"Tool call\"'"
   },
   "engines": {
     "node": "22.x"

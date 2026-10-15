@@ -121,16 +121,19 @@ included when a request fails or `LOG_LEVEL=debug`.
 
 ### Viewing logs on Railway
 
-Railway parses the JSON lines, so `level` and fields such as `tool` are filterable. From the repo root:
+Railway parses the JSON lines, so `level` and fields such as `tool` are filterable. Set `LOG_LEVEL=info`
+on the service (with `warn` successful tool calls are not logged). From the repo root:
 
 ```bash
-npm run logs           # live stream of the MCP server (service "web")
+npm run logs           # live stream of the fiken-mcp service
 npm run logs:problems  # errors and warnings only
 npm run logs:tools     # tool calls only
-npm run logs:http      # Railway's HTTP request log (path, status, duration)
-railway logs -s web -f "@tool:fiken_get_purchases"   # any field works as a filter
-railway logs -s web --since 1h                        # history instead of streaming
+npm run logs -- -f "@tool:fiken_get_purchases"   # any field works as a filter
+npm run logs -- --since 1h                       # history instead of streaming
 ```
+
+The service has no public domain (Hermes reaches it on `fiken-mcp.railway.internal`), so Railway's
+`--http` edge log stays empty; the app's own `Tool call` lines are the request log.
 
 ## Log Output Examples
 
