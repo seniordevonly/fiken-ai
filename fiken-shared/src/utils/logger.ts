@@ -4,6 +4,13 @@
 
 import winston from 'winston';
 
+// HTTP mode (PORT set) owns stdout, so hosts like Railway get one JSON object per line there and can
+// parse level and fields; in STDIO mode stdout carries JSON-RPC, so logs stay readable text on stderr
+const HTTP_MODE = Boolean(process.env.PORT);
+const JSON_CONSOLE = (process.env.LOG_FORMAT || (HTTP_MODE ? 'json' : 'pretty')) === 'json';
+// Container disks are ephemeral and invisible, so files are opt-in (LOG_TO_FILE=true) in HTTP mode
+const FILE_LOGGING_DEFAULT = process.env.LOG_TO_FILE ? process.env.LOG_TO_FILE === 'true' : !HTTP_MODE;
+
 // Cap each log file at 10 MB and keep 3 rotated files, so long-running servers don't fill the disk
 const LOG_FILE_ROTATION = { maxsize: 10 * 1024 * 1024, maxFiles: 3 };
 
@@ -32,7 +39,7 @@ export interface HttpLogData {
 const normalizeConfig = (config: LoggerConfig): LoggerConfig => ({
   level: config.level || process.env.LOG_LEVEL || 'info',
   enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
-  enableFile: config.enableFile ?? true, // Default to file logging
+  enableFile: config.enableFile ?? FILE_LOGGING_DEFAULT,
   logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
   serviceName: config.serviceName || 'fiken-shared',
   handleExceptions: config.handleExceptions ?? false,
@@ -55,11 +62,23 @@ class LoggerService {
 
     const transports: winston.transport[] = [];
 
-    // Console transport - send ALL levels to stderr to keep stdout free for JSON-RPC
-    if (this.config.enableConsole) {
+    if (this.config.enableConsole && JSON_CONSOLE) {
       transports.push(
         new winston.transports.Console({
-          stderrLevels: ['error', 'warn', 'info', 'debug'], // All levels to stderr for MCP compatibility
+          // stdout only when HTTP mode owns it; otherwise stderr keeps JSON-RPC on stdout clean
+          stderrLevels: HTTP_MODE ? [] : ['error', 'warn', 'info', 'debug'],
+          format: winston.format.combine(
+            winston.format.timestamp(),
+            winston.format.errors({ stack: true }),
+            winston.format.json()
+          )
+        })
+      );
+    } else if (this.config.enableConsole) {
+      // Send ALL levels to stderr to keep stdout free for JSON-RPC
+      transports.push(
+        new winston.transports.Console({
+          stderrLevels: ['error', 'warn', 'info', 'debug'],
           format: winston.format.combine(
             winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
             winston.format.errors({ stack: true }),
@@ -154,7 +173,8 @@ class LoggerService {
    * Log HTTP request start
    */
   httpRequest(data: Omit<HttpLogData, 'responseStatus' | 'responseData' | 'duration' | 'error'>): void {
-    this.info('HTTP Request Started', {
+    // The completion line carries everything useful, so the start line is debug-only noise
+    this.debug('HTTP Request Started', {
       http: {
         method: data.method,
         url: this.sanitizeUrl(data.url),
@@ -169,20 +189,24 @@ class LoggerService {
    * Log HTTP response
    */
   httpResponse(data: HttpLogData): void {
-    const level = data.responseStatus && data.responseStatus >= 400 ? 'error' : 'info';
-    const message = data.error ? 'HTTP Request Failed' : 'HTTP Request Completed';
+    const failed = Boolean(data.error) || (data.responseStatus !== undefined && data.responseStatus >= 400);
+    const message = failed ? 'HTTP Request Failed' : 'HTTP Request Completed';
+    // Bodies hold accounting data, so they're only logged when a request fails or at debug level
+    const includeBodies = failed || this.logger.isDebugEnabled();
     
-    this.logger.log(level, message, {
+    this.logger.log(failed ? 'error' : 'info', message, {
       http: {
         method: data.method,
         url: this.sanitizeUrl(data.url),
         requestId: data.requestId,
-        requestHeaders: this.sanitizeHeaders(data.requestHeaders),
-        requestBody: this.sanitizeRequestBody(data.requestBody),
         responseStatus: data.responseStatus,
-        responseData: this.sanitizeResponseData(data.responseData),
         duration: data.duration,
-        error: data.error
+        error: data.error,
+        ...(includeBodies && {
+          requestHeaders: this.sanitizeHeaders(data.requestHeaders),
+          requestBody: this.sanitizeRequestBody(data.requestBody),
+          responseData: this.sanitizeResponseData(data.responseData)
+        })
       }
     });
   }

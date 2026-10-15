@@ -19,7 +19,6 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import url from 'node:url';
 
 // VAT Type enum for validation
 const VatTypeEnum = z.enum([
@@ -931,7 +930,7 @@ class FikenMCPServer {
       params, 
       queryParams 
     });
-    logger.info('Get all purchaseses, queryParams', { queryParams });
+    logger.debug('Get all purchases, queryParams', { queryParams });
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
     
     return {
@@ -1624,9 +1623,12 @@ class FikenMCPServer {
       };
     } else if (mcpRequest.method === 'tools/call') {
       // Handle tool calls - execute the actual tool
+      const toolName = mcpRequest.params?.name;
+      const startedAt = Date.now();
       try {
         const { name, arguments: args } = mcpRequest.params;
         let toolResult;
+        logger.debug('Tool call arguments', { tool: name, args });
 
         if (HTTP_DISABLED_TOOLS.has(name)) {
           throw new Error(`Tool ${name} is not available over HTTP`);
@@ -1691,8 +1693,10 @@ class FikenMCPServer {
           id: mcpRequest.id,
           result: toolResult
         };
+        logger.info('Tool call', { tool: toolName, ok: true, durationMs: Date.now() - startedAt });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        logger.warn('Tool call', { tool: toolName, ok: false, durationMs: Date.now() - startedAt, error: errorMessage });
         mcpResponse = {
           jsonrpc: '2.0',
           id: mcpRequest.id,
@@ -1864,7 +1868,7 @@ class FikenMCPServer {
       }
 
       try {
-        const parsedUrl = url.parse(req.url!, true);
+        const parsedUrl = new URL(req.url!, 'http://localhost');
 
         if (req.method === 'GET' && parsedUrl.pathname === '/') {
           this.sendJson(res, 200, {
@@ -1930,7 +1934,7 @@ class FikenMCPServer {
           }));
         } else if (req.method === 'GET' && parsedUrl.pathname === '/oauth/authorize') {
           // OAuth 2.0 Authorization Endpoint - handle authorization code flow
-          const query = parsedUrl.query;
+          const query = Object.fromEntries(parsedUrl.searchParams);
           const clientId = query?.client_id as string;
           const redirectUri = query?.redirect_uri as string;
           const state = query?.state as string;

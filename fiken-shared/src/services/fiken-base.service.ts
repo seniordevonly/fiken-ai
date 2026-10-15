@@ -37,11 +37,11 @@ export class FikenBaseService {
     
     // Initialize logger
     if (config.enableLogging !== false) {
+      // Console and file defaults follow the run mode (see utils/logger); console always goes to
+      // stderr in STDIO mode, so it can't interfere with JSON-RPC
       this.logger = createLogger({
         level: config.logLevel || 'info',
-        serviceName: 'fiken-api',
-        enableConsole: false, // Disable console to avoid MCP STDIO interference
-        enableFile: true // Use file logging by default
+        serviceName: 'fiken-api'
       });
     } else {
       // Create a no-op logger if logging is disabled
@@ -220,6 +220,8 @@ export class FikenBaseService {
       requestBody: data
     });
 
+    // A non-2xx response is logged with its status and body before throwing, so the catch doesn't log it again
+    let failureLogged = false;
     try {
       const response = await fetch(url, requestOptions);
       const duration = Date.now() - startTime;
@@ -251,6 +253,7 @@ export class FikenBaseService {
           error: `HTTP ${response.status}: ${response.statusText}`
         });
         
+        failureLogged = true;
         this.handleErrorResponse(response, responseData);
       }
       
@@ -270,16 +273,18 @@ export class FikenBaseService {
       const duration = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       
-      // Log request failure
-      this.logger.httpResponse({
-        method,
-        url,
-        requestId,
-        requestHeaders: headers,
-        requestBody: data,
-        duration,
-        error: errorMessage
-      });
+      // Log network failures and timeouts
+      if (!failureLogged) {
+        this.logger.httpResponse({
+          method,
+          url,
+          requestId,
+          requestHeaders: headers,
+          requestBody: data,
+          duration,
+          error: errorMessage
+        });
+      }
       
       if (error instanceof Error) {
         throw new Error(`Fiken API request failed: ${error.message}`);
