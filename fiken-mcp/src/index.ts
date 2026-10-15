@@ -11,17 +11,17 @@ import { logger } from 'fiken-shared';
 import { FikenContext } from './context.js';
 import { startHttpServer } from './http/server.js';
 import { startStdioServer } from './stdio.js';
-import { invoiceTools } from './tools/invoices.js';
-import { purchaseTools } from './tools/purchases.js';
 import { ToolRegistry } from './tools/registry.js';
-import { statusTools } from './tools/status.js';
+import { resolveToolsetNames, selectTools } from './tools/toolsets.js';
 
 async function main(): Promise<void> {
   logger.info(`MCP Server starting at ${new Date().toISOString()}`);
   logger.info('Environment', { PORT: process.env.PORT, Mode: process.env.PORT ? 'HTTP' : 'STDIO' });
 
   const context = FikenContext.fromEnvironment();
-  const registry = new ToolRegistry([...statusTools, ...purchaseTools, ...invoiceTools], context);
+  const toolsets = resolveToolsetNames(process.env.FIKEN_TOOLSETS);
+  const registry = new ToolRegistry(selectTools(toolsets), context);
+  logger.info('Toolsets enabled', { toolsets, tools: registry.list('stdio').length });
 
   if (!process.env.PORT) {
     await startStdioServer(registry);
