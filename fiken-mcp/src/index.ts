@@ -91,6 +91,28 @@ const withAmountSummary = (purchase: any) => {
   };
 };
 
+// Compact list entry with what's needed to answer "what did we buy"; Fiken's full record is ~15x larger
+// (supplier contact, lines, payments, attachments) and overflows agent context on big pages
+const toPurchaseSummary = (purchase: any) => {
+  const descriptions: string[] = Array.isArray(purchase.lines)
+    ? purchase.lines.map((line: any) => line.description).filter(Boolean)
+    : [];
+  return {
+    purchaseId: purchase.purchaseId,
+    date: purchase.date,
+    dueDate: purchase.dueDate,
+    identifier: purchase.identifier,
+    kind: purchase.kind,
+    supplier: purchase.supplier?.name,
+    description: [...new Set(descriptions)].join('; ').slice(0, 200),
+    paid: purchase.paid,
+    amounts: withAmountSummary(purchase).amounts,
+  };
+};
+
+// Item counts for list tools, read when logging the tool call
+const toolResultItems = new WeakMap<object, number>();
+
 const PURCHASE_AMOUNTS_NOTE =
   'Each purchase includes "amounts" in major units (68.5 = 68.50): net/vat/total are in "currency", ' +
   'netNok/vatNok/totalNok are NOK booked at Fiken\'s exchange rate. Prefer these over the raw line fields, ' +
@@ -243,13 +265,20 @@ class FikenMCPServer {
       },
       {
         name: 'fiken_get_purchases',
-        description: `Get all purchases for a company with optional filtering and pagination. ${PURCHASE_AMOUNTS_NOTE}`,
+        description: 'Get purchases for a company with optional filtering and pagination. By default returns a compact ' +
+          'summary per purchase (purchaseId, date, supplier, description, amounts, paid) plus pagination; use ' +
+          'detail="full" for Fiken\'s complete records, or fiken_get_purchase for one purchase. ' + PURCHASE_AMOUNTS_NOTE,
         inputSchema: {
           type: 'object',
           properties: {
             companySlug: {
               type: 'string',
               description: 'Company identifier slug (defaults to env FIKEN_COMPANY_SLUG if omitted)',
+            },
+            detail: {
+              type: 'string',
+              enum: ['summary', 'full'],
+              description: 'summary (default): compact fields per purchase; full: complete Fiken records (much larger)',
             },
             params: {
               type: 'object',
@@ -919,6 +948,7 @@ class FikenMCPServer {
     
     CompanySlugSchema.parse(finalCompanySlug);
     
+    const detail = z.enum(['summary', 'full']).default('summary').parse(args.detail);
     const queryParams = params ? PurchaseQueryParamsSchema.parse(params) : undefined;
     
     // Debug info logging via logger (goes to stderr, captured by Heroku)
@@ -932,15 +962,23 @@ class FikenMCPServer {
     });
     logger.debug('Get all purchases, queryParams', { queryParams });
     const result = await this.purchaseService!.getPurchases(finalCompanySlug, queryParams);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(Array.isArray(result.data) ? { ...result, data: result.data.map(withAmountSummary) } : result, null, 2),
-        },
-      ],
+    if (!Array.isArray(result.data)) {
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    const pages = result.headers;
+    const pagination = pages && {
+      page: pages['Fiken-Api-Page'],
+      pageSize: pages['Fiken-Api-Page-Size'],
+      pageCount: pages['Fiken-Api-Page-Count'],
+      resultCount: pages['Fiken-Api-Result-Count'],
     };
+    const purchases = result.data.map(detail === 'full' ? withAmountSummary : toPurchaseSummary);
+
+    // Minified: indentation alone added ~30% to large pages
+    const toolResult = { content: [{ type: 'text', text: JSON.stringify({ pagination, purchases }) }] };
+    toolResultItems.set(toolResult, purchases.length);
+    return toolResult;
   }
 
   private async handleGetPurchaseDraftAttachments(args: any) {
@@ -1693,7 +1731,16 @@ class FikenMCPServer {
           id: mcpRequest.id,
           result: toolResult
         };
-        logger.info('Tool call', { tool: toolName, ok: true, durationMs: Date.now() - startedAt });
+        const resultChars = Array.isArray(toolResult?.content)
+          ? toolResult.content.reduce((sum: number, part: any) => sum + (typeof part.text === 'string' ? part.text.length : 0), 0)
+          : undefined;
+        logger.info('Tool call', {
+          tool: toolName,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+          resultChars,
+          items: toolResult ? toolResultItems.get(toolResult) : undefined,
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         logger.warn('Tool call', { tool: toolName, ok: false, durationMs: Date.now() - startedAt, error: errorMessage });
