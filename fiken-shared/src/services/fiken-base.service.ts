@@ -27,11 +27,9 @@ export class FikenBaseService {
 
   constructor(config: FikenConfig) {
     // Ensure base URL always ends with /api/v2
-    let baseUrl = config.baseUrl || 'https://api.fiken.no/api/v2';
-    if (baseUrl === 'https://api.fiken.no' || baseUrl.endsWith('/api/fiken.no')) {
-      baseUrl = 'https://api.fiken.no/api/v2';
-    } else if (!baseUrl.endsWith('/api/v2')) {
-      baseUrl = baseUrl.replace(/\/$/, '') + '/api/v2';
+    let baseUrl = (config.baseUrl || 'https://api.fiken.no/api/v2').replace(/\/+$/, '');
+    if (!baseUrl.endsWith('/api/v2')) {
+      baseUrl += '/api/v2';
     }
     this.baseUrl = baseUrl;
     this.apiToken = config.apiToken;
@@ -39,11 +37,11 @@ export class FikenBaseService {
     
     // Initialize logger
     if (config.enableLogging !== false) {
+      // Console and file defaults follow the run mode (see utils/logger); console always goes to
+      // stderr in STDIO mode, so it can't interfere with JSON-RPC
       this.logger = createLogger({
         level: config.logLevel || 'info',
-        serviceName: 'fiken-api',
-        enableConsole: false, // Disable console to avoid MCP STDIO interference
-        enableFile: true // Use file logging by default
+        serviceName: 'fiken-api'
       });
     } else {
       // Create a no-op logger if logging is disabled
@@ -142,12 +140,25 @@ export class FikenBaseService {
   }
 
   /**
+   * FormData stringifies a Buffer, so wrap it in a Blob to send it as a binary file part
+   */
+  protected toFilePart(file: Blob | Buffer): Blob {
+    return Buffer.isBuffer(file) ? new Blob([new Uint8Array(file)]) : file;
+  }
+
+  /**
    * Build full URL with query parameters
    */
   private buildUrl(endpoint: string, params?: Record<string, any>): string {
     // Properly join base URL and endpoint to avoid path replacement
     const baseUrl = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+    // Reject anything that could escape the intended path (e.g. "..", encoded segments); ':' is allowed for
+    // reskontro sub-account codes like 1500:10001
+    const [path] = cleanEndpoint.split('?');
+    if (!/^[A-Za-z0-9_:-]+(\/[A-Za-z0-9_:-]+)*$/.test(path)) {
+      throw new Error(`Invalid API endpoint path: ${path}`);
+    }
     const fullUrl = `${baseUrl}/${cleanEndpoint}`;
     
     const url = new URL(fullUrl);
@@ -210,18 +221,25 @@ export class FikenBaseService {
       requestBody: data
     });
 
+    // A non-2xx response is logged with its status and body before throwing, so the catch doesn't log it again
+    let failureLogged = false;
     try {
       const response = await fetch(url, requestOptions);
       const duration = Date.now() - startTime;
       
       if (!response.ok) {
         // Log error response
+        // The body can only be read once, so parse it here and hand it to handleErrorResponse
         let responseData: any;
         try {
           const responseText = await response.text();
-          responseData = responseText ? JSON.parse(responseText) : null;
+          try {
+            responseData = responseText ? JSON.parse(responseText) : null;
+          } catch {
+            responseData = responseText;
+          }
         } catch {
-          responseData = '[Unable to parse response]';
+          responseData = '[Unable to read response]';
         }
         
         this.logger.httpResponse({
@@ -236,7 +254,8 @@ export class FikenBaseService {
           error: `HTTP ${response.status}: ${response.statusText}`
         });
         
-        await this.handleErrorResponse(response);
+        failureLogged = true;
+        this.handleErrorResponse(response, responseData);
       }
       
       // Log successful response (we'll log the actual data in handleResponse)
@@ -255,16 +274,18 @@ export class FikenBaseService {
       const duration = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       
-      // Log request failure
-      this.logger.httpResponse({
-        method,
-        url,
-        requestId,
-        requestHeaders: headers,
-        requestBody: data,
-        duration,
-        error: errorMessage
-      });
+      // Log network failures and timeouts
+      if (!failureLogged) {
+        this.logger.httpResponse({
+          method,
+          url,
+          requestId,
+          requestHeaders: headers,
+          requestBody: data,
+          duration,
+          error: errorMessage
+        });
+      }
       
       if (error instanceof Error) {
         throw new Error(`Fiken API request failed: ${error.message}`);
@@ -303,29 +324,25 @@ export class FikenBaseService {
     // Extract pagination headers if present
     const headers: FikenPaginationHeaders | undefined = this.extractPaginationHeaders(response);
 
-    return { data, headers };
+    const location = response.headers.get('Location') || undefined;
+
+    return { data, headers, ...(location && { location }) };
   }
 
   /**
    * Handle error response
    */
-  private async handleErrorResponse(response: Response): Promise<never> {
+  private handleErrorResponse(response: Response, errorData: any): never {
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
     
-    try {
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json() as any;
-        if (errorData?.error_description) {
-          errorMessage = errorData.error_description;
-        } else if (errorData?.message) {
-          errorMessage = errorData.message;
-        } else if (errorData?.error) {
-          errorMessage = errorData.error;
-        }
-      }
-    } catch {
-      // If we can't parse the error response, use the default message
+    if (errorData?.error_description) {
+      errorMessage = `${errorMessage} - ${errorData.error_description}`;
+    } else if (errorData?.message) {
+      errorMessage = `${errorMessage} - ${errorData.message}`;
+    } else if (errorData?.error) {
+      errorMessage = `${errorMessage} - ${errorData.error}`;
+    } else if (typeof errorData === 'string' && errorData.trim()) {
+      errorMessage = `${errorMessage} - ${errorData.trim().slice(0, 500)}`;
     }
 
     throw new Error(errorMessage);
@@ -366,14 +383,21 @@ export class FikenBaseService {
     if (!companySlug || typeof companySlug !== 'string') {
       throw new Error('Company slug is required and must be a string');
     }
+    if (!/^[A-Za-z0-9_-]+$/.test(companySlug)) {
+      throw new Error('Company slug may only contain letters, digits, "-" and "_"');
+    }
   }
 
   /**
    * Validate required ID parameter
    */
   protected validateId(id: number | string, paramName: string): void {
-    if (!id || (typeof id !== 'number' && typeof id !== 'string')) {
-      throw new Error(`${paramName} is required and must be a number or string`);
+    // Ids are interpolated into URL paths, so only plain positive integers are allowed
+    const valid = typeof id === 'number'
+      ? Number.isSafeInteger(id) && id > 0
+      : typeof id === 'string' && /^[1-9]\d*$/.test(id);
+    if (!valid) {
+      throw new Error(`${paramName} is required and must be a positive integer`);
     }
   }
 
@@ -406,7 +430,7 @@ export class FikenBaseService {
     }
     
     if (attachment.file) {
-      formData.append('file', attachment.file);
+      formData.append('file', this.toFilePart(attachment.file), attachment.filename);
     }
     
     return this.uploadMultipart<T>(endpoint, formData, options);

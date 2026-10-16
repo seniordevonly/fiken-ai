@@ -69,10 +69,14 @@ customLogger.info('Custom logger message');
 interface LoggerConfig {
   level?: string;           // Log level: 'debug', 'info', 'warn', 'error'
   enableConsole?: boolean;  // Enable console output (default: true)
-  enableFile?: boolean;     // Enable file output (default: false)
-  logDir?: string;         // Directory for log files (default: './logs')
+  enableFile?: boolean;     // Enable file output (default: true in STDIO mode, false in HTTP mode)
+  logDir?: string;         // Directory for log files (default: LOG_DIR or '/tmp/logs')
   serviceName?: string;    // Service name for log context
+  handleExceptions?: boolean; // Log uncaught exceptions/rejections to file (default logger only)
 }
+```
+
+`createLogger` returns one shared instance per configuration, so creating services repeatedly does not open new log files.
 ```
 
 ### Fiken Service Configuration
@@ -92,12 +96,44 @@ interface FikenConfig {
 You can control logging behavior using environment variables:
 
 ```bash
-# Set global log level
+# Set global log level (debug also logs Fiken request/response bodies and tool arguments)
 LOG_LEVEL=debug
 
-# MCP Server will use this for HTTP request logging
-export LOG_LEVEL=info
+# Console format: 'json' (one object per line) or 'pretty'.
+# Defaults to json in HTTP mode (PORT set) and pretty in STDIO mode.
+LOG_FORMAT=json
+
+# Write log files in HTTP mode too (off by default there, since container disks are ephemeral)
+LOG_TO_FILE=true
+LOG_DIR=/tmp/logs
 ```
+
+### Run modes
+
+| | STDIO mode (no `PORT`) | HTTP mode (`PORT` set, e.g. Railway) |
+|---|---|---|
+| Console | Readable text on **stderr** (stdout is JSON-RPC) | One JSON object per line on **stdout** |
+| Files | On | Off unless `LOG_TO_FILE=true` |
+
+In HTTP mode each tool call is logged as `Tool call` with `tool`, `ok`, `durationMs` and `error`. Each Fiken
+API call is logged as `HTTP Request Completed`/`HTTP Request Failed`. Request and response bodies are only
+included when a request fails or `LOG_LEVEL=debug`.
+
+### Viewing logs on Railway
+
+Railway parses the JSON lines, so `level` and fields such as `tool` are filterable. Set `LOG_LEVEL=info`
+on the service (with `warn` successful tool calls are not logged). From the repo root:
+
+```bash
+npm run logs           # live stream of the fiken-mcp service
+npm run logs:problems  # errors and warnings only
+npm run logs:tools     # tool calls only
+npm run logs -- -f "@tool:fiken_get_purchases"   # any field works as a filter
+npm run logs -- --since 1h                       # history instead of streaming
+```
+
+The service has no public domain (Hermes reaches it on `fiken-mcp.railway.internal`), so Railway's
+`--http` edge log stays empty; the app's own `Tool call` lines are the request log.
 
 ## Log Output Examples
 

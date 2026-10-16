@@ -11,3 +11,8 @@ export * from './utils/logger';
 export * from './services/fiken-base.service';
 export * from './services/fiken-purchase.service';
 export * from './services/fiken-invoice.service';
+export * from './services/fiken-contact.service';
+export * from './services/fiken-accounting.service';
+export * from './services/fiken-sale.service';
+export * from './services/fiken-sales-document.service';
+export * from './services/fiken-workspace.service';

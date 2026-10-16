@@ -4,12 +4,24 @@
 
 import winston from 'winston';
 
+// HTTP mode (PORT set) owns stdout, so hosts like Railway get one JSON object per line there and can
+// parse level and fields; in STDIO mode stdout carries JSON-RPC, so logs stay readable text on stderr
+const HTTP_MODE = Boolean(process.env.PORT);
+const JSON_CONSOLE = (process.env.LOG_FORMAT || (HTTP_MODE ? 'json' : 'pretty')) === 'json';
+// Container disks are ephemeral and invisible, so files are opt-in (LOG_TO_FILE=true) in HTTP mode
+const FILE_LOGGING_DEFAULT = process.env.LOG_TO_FILE ? process.env.LOG_TO_FILE === 'true' : !HTTP_MODE;
+
+// Cap each log file at 10 MB and keep 3 rotated files, so long-running servers don't fill the disk
+const LOG_FILE_ROTATION = { maxsize: 10 * 1024 * 1024, maxFiles: 3 };
+
 export interface LoggerConfig {
   level?: string;
   enableConsole?: boolean;
   enableFile?: boolean;
   logDir?: string;
   serviceName?: string;
+  // Install process-wide uncaughtException/unhandledRejection handlers; only the default logger does
+  handleExceptions?: boolean;
 }
 
 export interface HttpLogData {
@@ -24,31 +36,49 @@ export interface HttpLogData {
   error?: string;
 }
 
+const normalizeConfig = (config: LoggerConfig): LoggerConfig => ({
+  level: config.level || process.env.LOG_LEVEL || 'info',
+  enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
+  enableFile: config.enableFile ?? FILE_LOGGING_DEFAULT,
+  logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
+  serviceName: config.serviceName || 'fiken-shared',
+  handleExceptions: config.handleExceptions ?? false,
+});
+
 class LoggerService {
   private logger: winston.Logger;
   private config: LoggerConfig;
 
-  constructor(config: LoggerConfig = {}) {
-    this.config = {
-      level: config.level || process.env.LOG_LEVEL || 'info',
-      enableConsole: config.enableConsole ?? true, // Default to console logging (stderr) for MCP compatibility
-      enableFile: config.enableFile ?? true, // Default to file logging
-      logDir: config.logDir || process.env.LOG_DIR || '/tmp/logs',
-      serviceName: config.serviceName || 'fiken-shared',
-      ...config
-    };
-
-    this.logger = this.createLogger();
+  constructor(config: LoggerConfig = {}, winstonLogger?: winston.Logger) {
+    this.config = normalizeConfig(config);
+    this.logger = winstonLogger ?? this.createLogger();
   }
 
   private createLogger(): winston.Logger {
+    // A silent logger needs no transports, so it opens no files
+    if (this.config.level === 'silent') {
+      return winston.createLogger({ silent: true });
+    }
+
     const transports: winston.transport[] = [];
 
-    // Console transport - send ALL levels to stderr to keep stdout free for JSON-RPC
-    if (this.config.enableConsole) {
+    if (this.config.enableConsole && JSON_CONSOLE) {
       transports.push(
         new winston.transports.Console({
-          stderrLevels: ['error', 'warn', 'info', 'debug'], // All levels to stderr for MCP compatibility
+          // stdout only when HTTP mode owns it; otherwise stderr keeps JSON-RPC on stdout clean
+          stderrLevels: HTTP_MODE ? [] : ['error', 'warn', 'info', 'debug'],
+          format: winston.format.combine(
+            winston.format.timestamp(),
+            winston.format.errors({ stack: true }),
+            winston.format.json()
+          )
+        })
+      );
+    } else if (this.config.enableConsole) {
+      // Send ALL levels to stderr to keep stdout free for JSON-RPC
+      transports.push(
+        new winston.transports.Console({
+          stderrLevels: ['error', 'warn', 'info', 'debug'],
           format: winston.format.combine(
             winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
             winston.format.errors({ stack: true }),
@@ -71,6 +101,7 @@ class LoggerService {
         new winston.transports.File({
           filename: `${this.config.logDir}/error.log`,
           level: 'error',
+          ...LOG_FILE_ROTATION,
           format: winston.format.combine(
             winston.format.timestamp(),
             winston.format.errors({ stack: true }),
@@ -79,6 +110,7 @@ class LoggerService {
         }),
         new winston.transports.File({
           filename: `${this.config.logDir}/combined.log`,
+          ...LOG_FILE_ROTATION,
           format: winston.format.combine(
             winston.format.timestamp(),
             winston.format.errors({ stack: true }),
@@ -93,12 +125,13 @@ class LoggerService {
       defaultMeta: { service: this.config.serviceName },
       transports,
       // Handle uncaught exceptions and rejections
-      exceptionHandlers: this.config.enableFile ? [
-        new winston.transports.File({ filename: `${this.config.logDir}/exceptions.log` })
-      ] : [],
-      rejectionHandlers: this.config.enableFile ? [
-        new winston.transports.File({ filename: `${this.config.logDir}/rejections.log` })
-      ] : []
+      // Pass undefined rather than [] when off: winston installs process listeners even for an empty array
+      exceptionHandlers: this.config.enableFile && this.config.handleExceptions ? [
+        new winston.transports.File({ filename: `${this.config.logDir}/exceptions.log`, ...LOG_FILE_ROTATION })
+      ] : undefined,
+      rejectionHandlers: this.config.enableFile && this.config.handleExceptions ? [
+        new winston.transports.File({ filename: `${this.config.logDir}/rejections.log`, ...LOG_FILE_ROTATION })
+      ] : undefined
     });
   }
 
@@ -140,7 +173,8 @@ class LoggerService {
    * Log HTTP request start
    */
   httpRequest(data: Omit<HttpLogData, 'responseStatus' | 'responseData' | 'duration' | 'error'>): void {
-    this.info('HTTP Request Started', {
+    // The completion line carries everything useful, so the start line is debug-only noise
+    this.debug('HTTP Request Started', {
       http: {
         method: data.method,
         url: this.sanitizeUrl(data.url),
@@ -155,20 +189,24 @@ class LoggerService {
    * Log HTTP response
    */
   httpResponse(data: HttpLogData): void {
-    const level = data.responseStatus && data.responseStatus >= 400 ? 'error' : 'info';
-    const message = data.error ? 'HTTP Request Failed' : 'HTTP Request Completed';
+    const failed = Boolean(data.error) || (data.responseStatus !== undefined && data.responseStatus >= 400);
+    const message = failed ? 'HTTP Request Failed' : 'HTTP Request Completed';
+    // Bodies hold accounting data, so they're only logged when a request fails or at debug level
+    const includeBodies = failed || this.logger.isDebugEnabled();
     
-    this.logger.log(level, message, {
+    this.logger.log(failed ? 'error' : 'info', message, {
       http: {
         method: data.method,
         url: this.sanitizeUrl(data.url),
         requestId: data.requestId,
-        requestHeaders: this.sanitizeHeaders(data.requestHeaders),
-        requestBody: this.sanitizeRequestBody(data.requestBody),
         responseStatus: data.responseStatus,
-        responseData: this.sanitizeResponseData(data.responseData),
         duration: data.duration,
-        error: data.error
+        error: data.error,
+        ...(includeBodies && {
+          requestHeaders: this.sanitizeHeaders(data.requestHeaders),
+          requestBody: this.sanitizeRequestBody(data.requestBody),
+          responseData: this.sanitizeResponseData(data.responseData)
+        })
       }
     });
   }
@@ -177,9 +215,8 @@ class LoggerService {
    * Create a child logger with additional context
    */
   child(meta: any): LoggerService {
-    const childLogger = new LoggerService(this.config);
-    childLogger.logger = this.logger.child(meta);
-    return childLogger;
+    // Reuse the parent's transports instead of opening new files
+    return new LoggerService(this.config, this.logger.child(meta));
   }
 
   /**
@@ -359,11 +396,21 @@ class LoggerService {
 }
 
 // Create default logger instance
-export const logger = new LoggerService();
+export const logger = new LoggerService({ handleExceptions: true });
+
+// Each logger opens its own file handles, so services re-created on every reconfigure share one per config
+const loggerCache = new Map<string, LoggerService>();
 
 // Export factory function for custom loggers
 export const createLogger = (config: LoggerConfig): LoggerService => {
-  return new LoggerService(config);
+  const normalized = normalizeConfig(config);
+  const key = JSON.stringify(normalized);
+  let cached = loggerCache.get(key);
+  if (!cached) {
+    cached = new LoggerService(normalized);
+    loggerCache.set(key, cached);
+  }
+  return cached;
 };
 
 // Export types

@@ -1,18 +1,45 @@
 # Fiken MCP Server
 
-A Model Context Protocol (MCP) server that provides tools for interacting with the Fiken Purchase Service API. This server allows AI assistants and other MCP clients to perform purchase-related operations in Fiken through a standardized interface.
+A Model Context Protocol (MCP) server that exposes the Fiken accounting API (v2) as MCP tools: purchases, invoices,
+contacts, accounting and bank data, sales, credit notes/offers/order confirmations, recurring invoices, inbox,
+projects and time tracking. It runs over stdio for local clients, or over HTTP (e.g. on Railway for Hermes/ChatGPT).
 
 ## Features
 
-### 🔧 **Available Tools**
+### 🔧 **Toolsets**
 
-1. **`fiken_configure`** - Configure API connection
-2. **`fiken_get_purchases`** - Get all purchases with filtering
-3. **`fiken_create_purchase`** - Create new purchases
-4. **`fiken_get_purchase`** - Get specific purchase by ID
-5. **`fiken_delete_purchase`** - Delete purchases (creates reverse transaction)
-6. **`fiken_create_purchase_draft`** - Create purchase drafts
-7. **`fiken_create_purchase_payment`** - Create payments for purchases
+Tools are grouped into toolsets, enabled with `FIKEN_TOOLSETS` (comma-separated, or `all`). Every enabled tool's
+schema is sent to the client on each conversation, so enable only what the agent needs. The default is the set an
+accounting firm (Fiken partner) uses for bookkeeping across client companies.
+
+| Toolset | Tools | Covers |
+|---|---|---|
+| *(core, always on)* | 5 | `fiken_status`, `fiken_configure` (stdio only), user, companies (find each client's `companySlug`) |
+| **Bookkeeping (default)** | | |
+| `purchases` | 17 | purchases, drafts, payments, accruals, attachments |
+| `sales` | 16 | sales (salg), drafts, payments, accruals |
+| `invoices` | 12 | invoices, drafts, create-from-draft, send, attachments |
+| `contacts` | 6 | contacts (suppliers/customers), contact groups |
+| `accounting` | 14 | accounts, account/bank balances, bank accounts, journal entries, transactions |
+| `inbox` | 4 | inbox and EHF documents (read-only) |
+| **Running the business (opt-in)** | | |
+| `sales-documents` | 16 | credit notes, offers, order confirmations, recurring invoices (read-only) |
+| `products` | 5 | products, product sales report |
+| `contact-persons` | 4 | contact persons on contacts |
+| `projects` | 4 | projects |
+| `time` | 11 | time entries, activities, time users |
+| `setup` | 4 | invoice and sales document number counters |
+
+Default: `purchases,sales,invoices,contacts,accounting,inbox` (74 tools). Unknown names are logged and ignored.
+
+Every tool with its description and inputs: [TOOLS.md](TOOLS.md) (regenerate with `npm run docs:tools`).
+
+**Scope:** list/get, create and update operations only. Nothing irreversible is exposed: no deletes
+(`fiken_delete_purchase` is commented out), no recurring invoice creation or scheduling, no file uploads over HTTP,
+and nothing that sends documents to customers except `fiken_send_invoice`. Create tools return the new resource's
+`id`. List tools return `{ pagination, <items> }` with a compact summary per item by default and `detail: "full"` for
+complete records. Money is integer øre (cents) unless a field says otherwise (the `amounts` summaries on purchases
+and sales are in major units).
 
 ### 🛡️ **Built-in Validation**
 
@@ -204,14 +231,33 @@ npm run clean
 ### Project Structure
 
 ```
-fiken-mcp/
-├── src/
-│   └── index.ts          # Main MCP server implementation
-├── dist/                 # Compiled JavaScript output
-├── package.json          # Project configuration
-├── tsconfig.json         # TypeScript configuration
-└── README.md            # This file
+fiken-mcp/src/
+├── index.ts              # Entry point: builds the context and registry, starts stdio or HTTP
+├── config.ts             # Server info, limits, FIKEN_* env config
+├── context.ts            # Configured Fiken clients + default company (resolveCompanySlug)
+├── schemas.ts            # Zod schemas for tool arguments
+├── formatters/
+│   └── purchases.ts      # "amounts" summary and compact purchase list entries
+├── tools/
+│   ├── types.ts          # ToolDefinition contract, jsonResult/textResult helpers
+│   ├── registry.ts       # Lists tools per transport; runs them with error handling and logging
+│   ├── status.ts         # fiken_status, fiken_configure
+│   ├── purchases.ts      # Purchase, draft, attachment and payment tools
+│   └── invoices.ts       # Invoice and invoice draft tools
+├── stdio.ts              # stdio transport (local MCP clients)
+└── http/
+    ├── server.ts         # HTTP routing (Railway): /mcp, OAuth, discovery, health
+    ├── mcp.ts            # JSON-RPC over HTTP
+    ├── auth.ts           # Bearer token and OAuth access token checks
+    ├── oauth.ts          # /oauth/token, /oauth/authorize, .well-known discovery documents
+    ├── openapi.ts        # /openapi.json
+    └── utils.ts          # readBody, sendJson
 ```
+
+**Adding a tool:** add a `ToolDefinition` to the relevant `tools/*.ts` array (name, description, JSON
+`inputSchema`, `handler(args, context)`). Validate args with zod (`schema.parse(args.x, { path: ['x'] })`, so errors
+name the field) and return `jsonResult(...)` or `textResult(...)`. Set `http: false` if the tool must not be callable
+on the shared HTTP server. Tests live next to the code as `*.test.ts` and run with vitest.
 
 ## Integration with MCP Clients
 
@@ -235,6 +281,43 @@ Add to your Claude Desktop configuration:
 ```
 
 Or use system environment variables by omitting the `env` section.
+
+### Hermes Agent on Railway (HTTP)
+
+When `PORT` is set, the server runs in HTTP mode and serves MCP at `POST /mcp`. HTTP mode requires
+`MCP_AUTH_TOKEN` and refuses to start without it. `/mcp` accepts either:
+
+- `Authorization: Bearer <MCP_AUTH_TOKEN>` — a static token, used by Hermes;
+- an OAuth access token from `/oauth/token` (client credentials or authorization code flow), used by ChatGPT.
+  OAuth is enabled only when `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are set (enter the same values in the
+  ChatGPT connector); there are no default credentials.
+  Access tokens are signed with `MCP_AUTH_TOKEN`, so changing it invalidates issued tokens.
+
+`fiken_configure` and `fiken_add_attachment_to_purchase_draft` are not available over HTTP.
+
+1. In the Railway project that runs Hermes, add a service from this repo (Railway runs `npm install`, `npm run build`, `npm start`).
+2. Set its variables:
+   ```bash
+   FIKEN_API_TOKEN=your-fiken-api-token
+   FIKEN_COMPANY_SLUG=your-company-slug
+   PORT=8080
+   MCP_AUTH_TOKEN=<output of: openssl rand -hex 32>
+   LOG_LEVEL=warn
+   ```
+   Don't generate a public domain; Hermes reaches the service over Railway's private network.
+   In the service settings, set the healthcheck path to `/health` and watch paths to `/fiken-mcp/**`, `/fiken-shared/**`, `/package.json`.
+3. On the Hermes service, set `FIKEN_MCP_TOKEN` to the same value as `MCP_AUTH_TOKEN` (define it either as a Railway variable
+   or in Hermes's `.env`, not both — the `.env` file wins), and add to Hermes's `config.yaml` (`/opt/data/config.yaml` in the official image):
+   ```yaml
+   mcp_servers:
+     fiken:
+       url: "http://<fiken-service-name>.railway.internal:8080/mcp"
+       headers:
+         Authorization: "Bearer ${FIKEN_MCP_TOKEN}"
+       tools:
+         exclude: [fiken_delete_purchase]   # everyone in Slack shares one Fiken identity
+   ```
+4. Run `/reload-mcp` in Hermes (a running gateway also picks up `mcp_servers` changes within about a minute), or check with `hermes mcp test fiken`.
 
 ### Other MCP Clients
 
